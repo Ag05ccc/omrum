@@ -16,12 +16,22 @@ _lock = threading.Lock()
 _current: Optional[BrowserEvent] = None
 
 
+def _normalize_host(host: str) -> str:
+    host = (host or "").lower()
+    # Strip the cosmetic `www.` alias so youtube.com and www.youtube.com
+    # don't appear as two separate sites. Other subdomains (m., docs., …)
+    # stay as-is because they are frequently meaningfully different sites.
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
 def update(url: str, title: str) -> None:
     global _current
     domain = ""
     try:
         parsed = urlparse(url)
-        domain = parsed.hostname or ""
+        domain = _normalize_host(parsed.hostname or "")
     except Exception:
         domain = ""
     with _lock:

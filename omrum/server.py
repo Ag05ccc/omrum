@@ -71,6 +71,16 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "time": time.time()})
         elif path == "/api/labels":
             self._json(200, {"labels": storage.list_labels(), "rules": storage.list_rules()})
+        elif path == "/api/settings":
+            self._json(200, {
+                "idle_threshold_s": storage.get_setting_float(
+                    "idle_threshold_s", config.IDLE_THRESHOLD_S),
+                "idle_threshold_default_s": config.IDLE_THRESHOLD_S,
+                "poll_interval_s": config.POLL_INTERVAL_S,
+                "http_port": config.HTTP_PORT,
+                "http_host": config.HTTP_HOST,
+                "data_dir": str(config.DATA_DIR),
+            })
         elif path == "/api/summary":
             # back-compat: accept legacy ?date=YYYY-MM-DD as day-period anchor
             anchor = qs.get("anchor") or qs.get("date")
@@ -98,6 +108,32 @@ class Handler(BaseHTTPRequestHandler):
                 lid = rule_map.get((tt, it["label"]))
                 it["assigned"] = label_map.get(lid) if lid else None
 
+            # Pick a timeline bucket that renders nicely across periods.
+            span = max(1.0, win.end_ts - win.start_ts)
+            if span <= 36 * 3600:           # day → 1h bars
+                bucket_s = 3600.0
+            elif span <= 10 * 86400:        # week/short range → 4h bars
+                bucket_s = 4 * 3600.0
+            else:                            # month/year/range → 1 day bars
+                bucket_s = 86400.0
+            timeline = storage.summary_timeline(win.start_ts, win.end_ts, bucket_s)
+
+            # Derived productivity stats.
+            p_total = sum(b["productive"] for b in timeline)
+            u_total = sum(b["unproductive"] for b in timeline)
+            n_total = sum(b["neutral"] for b in timeline)
+            i_total = sum(b["idle"] for b in timeline)
+            effective_base = p_total + u_total
+            effectiveness = (p_total / effective_base) if effective_base > 0 else 0.0
+            tracked = p_total + u_total + n_total + sum(b["unlabeled"] for b in timeline)
+            productivity = (p_total / tracked) if tracked > 0 else 0.0
+            peak = None
+            if timeline:
+                pk = max(timeline, key=lambda b: b["productive"])
+                if pk["productive"] > 0:
+                    peak = {"t": pk["t"], "productive": pk["productive"],
+                            "bucket_s": bucket_s}
+
             self._json(200, {
                 "window": {
                     "period": win.period,
@@ -113,6 +149,16 @@ class Handler(BaseHTTPRequestHandler):
                 "apps": _attach(storage.summary_by_app(win.start_ts, win.end_ts), "app"),
                 "domains": _attach(storage.summary_by_domain(win.start_ts, win.end_ts), "domain"),
                 "by_label": storage.summary_by_label(win.start_ts, win.end_ts),
+                "timeline": {"bucket_s": bucket_s, "buckets": timeline},
+                "stats": {
+                    "productive_seconds": p_total,
+                    "unproductive_seconds": u_total,
+                    "neutral_seconds": n_total,
+                    "idle_seconds": i_total,
+                    "effectiveness": effectiveness,
+                    "productivity": productivity,
+                    "peak": peak,
+                },
             })
         else:
             self.send_error(404)
@@ -145,6 +191,21 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(400, {"error": str(e)})
             return self._json(200, lb)
+
+        if path == "/api/settings":
+            idle = body.get("idle_threshold_s")
+            if idle is None:
+                return self._json(400, {"error": "idle_threshold_s required"})
+            try:
+                idle_f = float(idle)
+            except (TypeError, ValueError):
+                return self._json(400, {"error": "idle_threshold_s must be a number"})
+            if idle_f < 10:
+                return self._json(400, {"error": "idle_threshold_s must be >= 10 seconds"})
+            if idle_f > 86400:
+                return self._json(400, {"error": "idle_threshold_s must be <= 86400 (24h)"})
+            storage.set_setting("idle_threshold_s", idle_f)
+            return self._json(200, {"ok": True, "idle_threshold_s": idle_f})
 
         if path == "/api/assign":
             target_type = body.get("target_type")

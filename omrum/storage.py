@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS label_rules (
     UNIQUE(target_type, target)
 );
 CREATE INDEX IF NOT EXISTS idx_rules_target ON label_rules(target_type, target);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 _DEFAULT_LABELS = (
@@ -49,6 +54,10 @@ _CLIPPED = "(MIN(end_ts, :end) - MAX(start_ts, :start))"
 
 _lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
+# Lightweight in-memory cache for the settings table. Tracker polls it every
+# few seconds; reading from a dict is cheaper (and doesn't need a DB lock)
+# than running SELECT on every tick.
+_settings: dict[str, str] = {}
 
 
 def init() -> None:
@@ -61,6 +70,10 @@ def init() -> None:
     count = _conn.execute("SELECT COUNT(*) FROM labels").fetchone()[0]
     if count == 0:
         _conn.executemany("INSERT INTO labels (name, color) VALUES (?, ?)", _DEFAULT_LABELS)
+    # Prime the settings cache.
+    _settings.clear()
+    for k, v in _conn.execute("SELECT key, value FROM settings").fetchall():
+        _settings[k] = v
 
 
 @contextmanager
@@ -96,27 +109,51 @@ def insert_manual(app: str, domain: Optional[str], seconds: float, when_ts: floa
 def import_events(events: list[dict], apply_label_name: Optional[str] = None,
                   title_tag: str = "[import]") -> dict:
     """Batch-insert a list of imported events. Each item needs keys
-    `app`, `seconds`, `when_ts`, and optionally `title`, `domain`.
-    If `apply_label_name` is given, the referenced label is associated with
-    every unique `app` (and every unique `domain`) seen in this batch via
-    label_rules. Returns {inserted, labeled_targets}.
+    `app`, `seconds`, `when_ts`, and optionally `title`, `domain`, `label`.
+
+    Label rules:
+    - An event may carry a per-event `label` (label name). A rule is created
+      for that event's target (domain if set, else app).
+    - `apply_label_name` is a fallback: it's applied to every target that the
+      per-event labels didn't cover. Use it alone for single-label imports
+      (Clockify); leave it blank for imports that have per-row productivity
+      (DeskTime).
+
+    Returns {inserted, labeled_targets}.
     """
     if not events:
         return {"inserted": 0, "labeled_targets": 0}
-    label_id: Optional[int] = None
+
+    # Resolve (or create) every label name we'll need, before opening the
+    # write cursor — avoids re-entering the storage lock.
+    needed: set[str] = set()
     if apply_label_name:
+        needed.add(apply_label_name)
+    for ev in events:
+        nm = (ev.get("label") or "").strip()
+        if nm:
+            needed.add(nm)
+
+    label_ids: dict[str, int] = {}
+    if needed:
         with cursor() as cur:
-            row = cur.execute("SELECT id FROM labels WHERE name = ?", (apply_label_name,)).fetchone()
-            if row:
-                label_id = int(row[0])
-            else:
-                cur.execute("INSERT INTO labels (name, color) VALUES (?, ?)",
-                            (apply_label_name, "#4ade80"))
-                label_id = int(cur.lastrowid)
+            for nm in needed:
+                row = cur.execute("SELECT id FROM labels WHERE name = ?", (nm,)).fetchone()
+                if row:
+                    label_ids[nm] = int(row[0])
+                else:
+                    cur.execute("INSERT INTO labels (name, color) VALUES (?, ?)",
+                                (nm, "#4ade80"))
+                    label_ids[nm] = int(cur.lastrowid)
+
+    fallback_id = label_ids.get(apply_label_name) if apply_label_name else None
 
     inserted = 0
-    apps: set[str] = set()
-    domains: set[str] = set()
+    # (target_type, target) -> label_id, from per-event labels (last writer wins)
+    per_target: dict[tuple[str, str], int] = {}
+    all_apps: set[str] = set()
+    all_domains: set[str] = set()
+
     with cursor() as cur:
         for ev in events:
             app = (ev.get("app") or "").strip() or "manual"
@@ -134,24 +171,46 @@ def import_events(events: list[dict], apply_label_name: Optional[str] = None,
                 (start_ts, end_ts, seconds, app, title, domain),
             )
             inserted += 1
-            apps.add(app)
+            all_apps.add(app)
             if domain:
-                domains.add(domain)
+                all_domains.add(domain)
+
+            ev_label = (ev.get("label") or "").strip()
+            if ev_label and ev_label in label_ids:
+                lid = label_ids[ev_label]
+                # Per-event label applies to the most-specific target we have.
+                if domain:
+                    per_target[("domain", domain)] = lid
+                else:
+                    per_target[("app", app)] = lid
 
         labeled = 0
-        if label_id is not None:
-            for a in apps:
+        # First: per-event labels (specific).
+        for (tt, target), lid in per_target.items():
+            cur.execute(
+                "INSERT INTO label_rules (label_id, target_type, target) VALUES (?, ?, ?) "
+                "ON CONFLICT(target_type, target) DO UPDATE SET label_id = excluded.label_id",
+                (lid, tt, target),
+            )
+            labeled += 1
+        # Then: fallback label fills in anything per-event didn't cover.
+        if fallback_id is not None:
+            for a in all_apps:
+                if ("app", a) in per_target:
+                    continue
                 cur.execute(
                     "INSERT INTO label_rules (label_id, target_type, target) VALUES (?, 'app', ?) "
                     "ON CONFLICT(target_type, target) DO UPDATE SET label_id = excluded.label_id",
-                    (label_id, a),
+                    (fallback_id, a),
                 )
                 labeled += 1
-            for d in domains:
+            for d in all_domains:
+                if ("domain", d) in per_target:
+                    continue
                 cur.execute(
                     "INSERT INTO label_rules (label_id, target_type, target) VALUES (?, 'domain', ?) "
                     "ON CONFLICT(target_type, target) DO UPDATE SET label_id = excluded.label_id",
-                    (label_id, d),
+                    (fallback_id, d),
                 )
                 labeled += 1
     return {"inserted": inserted, "labeled_targets": labeled}
@@ -200,25 +259,29 @@ def _overlap_filter(include_idle: bool) -> str:
 
 def summary_by_app(start_ts: float, end_ts: float, include_idle: bool = False, limit: int = 200):
     q = (
-        f"SELECT app, SUM({_CLIPPED}) AS total "
+        f"SELECT app, SUM({_CLIPPED}) AS total, MAX(MIN(end_ts, :end)) AS last_seen, "
+        f"       MIN(MAX(start_ts, :start)) AS first_seen "
         f"FROM events {_overlap_filter(include_idle)}"
         f"GROUP BY app ORDER BY total DESC LIMIT :limit"
     )
     with cursor() as cur:
         cur.execute(q, {"start": start_ts, "end": end_ts, "limit": limit})
-        return [{"app": r[0], "seconds": r[1] or 0.0} for r in cur.fetchall()]
+        return [{"app": r[0], "seconds": r[1] or 0.0,
+                 "last_seen": r[2], "first_seen": r[3]} for r in cur.fetchall()]
 
 
 def summary_by_domain(start_ts: float, end_ts: float, include_idle: bool = False, limit: int = 200):
     q = (
-        f"SELECT domain, SUM({_CLIPPED}) AS total "
+        f"SELECT domain, SUM({_CLIPPED}) AS total, MAX(MIN(end_ts, :end)) AS last_seen, "
+        f"       MIN(MAX(start_ts, :start)) AS first_seen "
         f"FROM events {_overlap_filter(include_idle)}"
         f"AND domain IS NOT NULL AND domain != '' "
         f"GROUP BY domain ORDER BY total DESC LIMIT :limit"
     )
     with cursor() as cur:
         cur.execute(q, {"start": start_ts, "end": end_ts, "limit": limit})
-        return [{"domain": r[0], "seconds": r[1] or 0.0} for r in cur.fetchall()]
+        return [{"domain": r[0], "seconds": r[1] or 0.0,
+                 "last_seen": r[2], "first_seen": r[3]} for r in cur.fetchall()]
 
 
 def summary_activity(start_ts: float, end_ts: float, include_idle: bool = False, limit: int = 200):
@@ -228,13 +291,115 @@ def summary_activity(start_ts: float, end_ts: float, include_idle: bool = False,
         "SELECT "
         "  CASE WHEN domain IS NOT NULL AND domain != '' THEN domain ELSE app END AS label, "
         "  CASE WHEN domain IS NOT NULL AND domain != '' THEN 'web' ELSE 'app' END AS kind, "
-        f" SUM({_CLIPPED}) AS total "
+        f" SUM({_CLIPPED}) AS total, MAX(MIN(end_ts, :end)) AS last_seen, "
+        f" MIN(MAX(start_ts, :start)) AS first_seen "
         f"FROM events {_overlap_filter(include_idle)}"
         "GROUP BY label, kind ORDER BY total DESC LIMIT :limit"
     )
     with cursor() as cur:
         cur.execute(q, {"start": start_ts, "end": end_ts, "limit": limit})
-        return [{"label": r[0], "kind": r[1], "seconds": r[2] or 0.0} for r in cur.fetchall()]
+        return [{"label": r[0], "kind": r[1], "seconds": r[2] or 0.0,
+                 "last_seen": r[3], "first_seen": r[4]} for r in cur.fetchall()]
+
+
+# Map "well-known" label names to productivity categories for the timeline view.
+# Everything else with a rule → neutral; no rule → unlabeled; idle → idle.
+_PRODUCTIVE_NAMES = frozenset({"verimli", "productive"})
+_UNPRODUCTIVE_NAMES = frozenset({"verimsiz", "unproductive"})
+
+
+def summary_timeline(start_ts: float, end_ts: float, bucket_s: float):
+    """Bucket every event into fixed-size time slots, classifying each second
+    as productive / unproductive / neutral / unlabeled / idle. Used by the
+    dashboard's productivity bar. Returns a list of buckets:
+      [{t, productive, unproductive, neutral, unlabeled, idle}, ...]
+    """
+    if bucket_s <= 0 or end_ts <= start_ts:
+        return []
+
+    n = int((end_ts - start_ts) // bucket_s) + 1
+    buckets = []
+    for i in range(n):
+        t = start_ts + i * bucket_s
+        if t >= end_ts:
+            break
+        buckets.append({
+            "t": t, "productive": 0.0, "unproductive": 0.0,
+            "neutral": 0.0, "unlabeled": 0.0, "idle": 0.0,
+        })
+
+    with cursor() as cur:
+        cur.execute("SELECT id, name FROM labels")
+        label_name = {int(r[0]): (r[1] or "").strip().lower() for r in cur.fetchall()}
+        rules = {}
+        cur.execute("SELECT target_type, target, label_id FROM label_rules")
+        for tt, t, lid in cur.fetchall():
+            rules[(tt, t)] = int(lid)
+
+        cur.execute(
+            "SELECT start_ts, end_ts, app, domain, idle FROM events "
+            "WHERE start_ts < :end AND end_ts > :start",
+            {"start": start_ts, "end": end_ts},
+        )
+        for s, e, app, domain, is_idle in cur.fetchall():
+            s = max(float(s), start_ts)
+            e = min(float(e), end_ts)
+            if e <= s:
+                continue
+            if is_idle:
+                cat = "idle"
+            else:
+                lid = rules.get(("domain", domain)) if domain else None
+                if lid is None:
+                    lid = rules.get(("app", app))
+                if lid is None:
+                    cat = "unlabeled"
+                else:
+                    nm = label_name.get(lid, "")
+                    if nm in _PRODUCTIVE_NAMES:
+                        cat = "productive"
+                    elif nm in _UNPRODUCTIVE_NAMES:
+                        cat = "unproductive"
+                    else:
+                        cat = "neutral"
+
+            bi = int((s - start_ts) // bucket_s)
+            while s < e and 0 <= bi < len(buckets):
+                bend = start_ts + (bi + 1) * bucket_s
+                step = min(e, bend) - s
+                if step > 0:
+                    buckets[bi][cat] += step
+                s = bend
+                bi += 1
+
+    return buckets
+
+
+# ---------- settings ----------
+
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    return _settings.get(key, default)
+
+
+def set_setting(key: str, value) -> None:
+    sval = str(value)
+    _settings[key] = sval
+    with cursor() as cur:
+        cur.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, sval),
+        )
+
+
+def get_setting_float(key: str, default: float) -> float:
+    v = _settings.get(key)
+    if v is None:
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
 
 
 # ---------- labels ----------

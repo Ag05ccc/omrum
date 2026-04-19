@@ -40,7 +40,10 @@ def run_forever(stop_event) -> None:
         now = time.time()
         active = win.active()
         idle_s = idle.idle_seconds() if have_idle else 0.0
-        is_idle = have_idle and idle_s >= config.IDLE_THRESHOLD_S
+        # Read the idle threshold every tick so the Settings UI takes effect
+        # live. Falls back to the env-var/default if no override is stored.
+        idle_threshold = storage.get_setting_float("idle_threshold_s", config.IDLE_THRESHOLD_S)
+        is_idle = have_idle and idle_s >= idle_threshold
 
         if active is None:
             app, title = "unknown", ""

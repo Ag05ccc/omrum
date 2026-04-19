@@ -9,7 +9,9 @@ HTTP_HOST = os.environ.get("OMRUM_HOST", "127.0.0.1")
 HTTP_PORT = int(os.environ.get("OMRUM_PORT", "7942"))
 
 POLL_INTERVAL_S = float(os.environ.get("OMRUM_POLL", "2.0"))
-IDLE_THRESHOLD_S = float(os.environ.get("OMRUM_IDLE", "120"))
+# Default idle threshold: 5 minutes. Overridable at runtime from the Settings
+# UI (stored in the `settings` table) and at daemon start via OMRUM_IDLE.
+IDLE_THRESHOLD_S = float(os.environ.get("OMRUM_IDLE", "300"))
 BROWSER_EVENT_TTL_S = 5.0
 
 BROWSER_APPS = {
