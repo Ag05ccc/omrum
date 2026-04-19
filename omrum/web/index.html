@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Omrum</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Omrum</h1>
+      <nav class="tabs">
+        <button data-period="day"   class="active">Day</button>
+        <button data-period="week">Week</button>
+        <button data-period="month">Month</button>
+        <button data-period="year">Year</button>
+        <button data-period="range">Range</button>
+      </nav>
+      <div class="head-actions">
+        <button id="add-time" class="ghost">+ Add time</button>
+        <button id="import-csv" class="ghost">Import CSV</button>
+        <button id="manage-labels" class="ghost">Manage labels</button>
+        <button id="restart-daemon" class="ghost" title="Restart the tracker daemon">↻ Restart</button>
+      </div>
+    </header>
+
+    <section class="range">
+      <button id="prev" title="Previous period">‹</button>
+      <div id="label-window" class="label">—</div>
+      <button id="next" title="Next period">›</button>
+      <button id="today" class="today">Today</button>
+    </section>
+
+    <section id="range-pickers" class="range-pickers hidden">
+      <label>From <input id="range-start" type="date" /></label>
+      <label>To <input id="range-end" type="date" /></label>
+      <button id="range-apply">Show</button>
+      <div class="range-presets">
+        <button data-preset="7">Last 7 days</button>
+        <button data-preset="30">Last 30 days</button>
+        <button data-preset="90">Last 90 days</button>
+        <button data-preset="365">Last 365 days</button>
+      </div>
+    </section>
+
+    <section class="totals">
+      <div class="stat"><span class="tlabel">Active</span><span id="active" class="value">—</span></div>
+      <div class="stat"><span class="tlabel">Idle</span><span id="idle" class="value">—</span></div>
+      <div class="stat"><span class="tlabel">Total</span><span id="total" class="value">—</span></div>
+    </section>
+
+    <main>
+      <section class="wide">
+        <h2>By category</h2>
+        <p class="hint">Hours per label. Click any item below to (re)label it.</p>
+        <ul id="by-label" class="bars"></ul>
+      </section>
+
+      <section class="wide">
+        <h2>Where time went</h2>
+        <p class="hint">Browser time is broken out by website. Click an item to assign a label.</p>
+        <ul id="activity" class="bars"></ul>
+      </section>
+
+      <section>
+        <h2>By application</h2>
+        <ul id="apps" class="bars"></ul>
+      </section>
+      <section>
+        <h2>By website</h2>
+        <ul id="domains" class="bars"></ul>
+      </section>
+    </main>
+
+    <!-- Label picker popover (shown near a clicked bar) -->
+    <div id="picker" class="picker hidden">
+      <div class="picker-title">Assign label</div>
+      <ul id="picker-list"></ul>
+      <div class="picker-actions">
+        <button id="picker-clear">No label</button>
+      </div>
+    </div>
+
+    <!-- Row actions popover (shown when clicking ⋯) -->
+    <div id="rowmenu" class="picker hidden">
+      <div class="picker-title" id="rowmenu-target">—</div>
+      <ul>
+        <li id="rowmenu-del-period">🗑 Delete time in this period</li>
+        <li id="rowmenu-del-all" class="danger">🗑 Delete all time (all history)</li>
+      </ul>
+    </div>
+
+    <!-- Import CSV modal -->
+    <div id="import-modal" class="modal hidden">
+      <div class="modal-box wide">
+        <header>
+          <h3>Import CSV (Clockify summary)</h3>
+          <button id="import-close" class="ghost">✕</button>
+        </header>
+        <div class="import-body">
+          <label class="drop">
+            <input id="import-file" type="file" accept=".csv,text/csv" />
+            <span id="import-filename">Choose a Clockify summary .csv…</span>
+          </label>
+          <div class="row2">
+            <label>Anchor date (events end at)
+              <input id="import-anchor" type="datetime-local" />
+            </label>
+            <label>Apply label to every row
+              <input id="import-label" type="text" placeholder="e.g. verimli (blank = none)" value="verimli" />
+            </label>
+          </div>
+          <div id="import-preview" class="import-preview">Select a file to see a preview.</div>
+          <div class="add-actions">
+            <button type="button" id="import-cancel" class="ghost">Cancel</button>
+            <button type="button" id="import-go" disabled>Import</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add manual time modal -->
+    <div id="add-modal" class="modal hidden">
+      <div class="modal-box">
+        <header>
+          <h3>Add time</h3>
+          <button id="add-close" class="ghost">✕</button>
+        </header>
+        <form id="add-form" class="add-form">
+          <label>App (required if no website)
+            <input id="add-app" type="text" placeholder="e.g. reading, meeting, code" />
+          </label>
+          <label>Website (optional)
+            <input id="add-domain" type="text" placeholder="e.g. youtube.com" />
+          </label>
+          <div class="row2">
+            <label>Hours <input id="add-hours" type="number" min="0" value="0" /></label>
+            <label>Minutes <input id="add-mins" type="number" min="0" max="59" value="30" /></label>
+          </div>
+          <label>When (ends at)
+            <input id="add-when" type="datetime-local" />
+          </label>
+          <div class="add-actions">
+            <button type="button" id="add-cancel" class="ghost">Cancel</button>
+            <button type="submit">Add</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Manage labels modal -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-box">
+        <header>
+          <h3>Labels</h3>
+          <button id="modal-close" class="ghost">✕</button>
+        </header>
+        <ul id="label-list" class="label-list"></ul>
+        <form id="label-form" class="label-form">
+          <input id="new-name" placeholder="New label name" required />
+          <input id="new-color" type="color" value="#4f8cff" />
+          <button type="submit">Add</button>
+        </form>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

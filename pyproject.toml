@@ -1,0 +1,24 @@
+[project]
+name = "omrum"
+version = "0.1.0"
+description = "Local-first desktop time tracker: measures time per application and URL on Linux/X11."
+requires-python = ">=3.10"
+dependencies = [
+    "python-xlib>=0.33",
+    "psutil>=5.9",
+    "pystray>=0.19",
+    "Pillow>=10",
+]
+
+[project.scripts]
+omrum = "omrum.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["omrum*"]
+
+[tool.setuptools.package-data]
+omrum = ["web/*.html", "web/*.js", "web/*.css"]
