@@ -43,6 +43,23 @@ function labelChip(label) {
   return `<span class="chip-label" style="background:${label.color}">${escapeHtml(label.name)}</span>`;
 }
 
+function fmtHm(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function whenLabel(it) {
+  // Show the active time range on the day view; elide on longer windows.
+  if (state.period !== "day") return "";
+  const a = fmtHm(it.first_seen), b = fmtHm(it.last_seen);
+  if (!a && !b) return "";
+  if (a === b || !a) return b;
+  if (!b) return a;
+  return `${a}–${b}`;
+}
+
 function renderBars(el, items, nameKey, kindKey, clickable) {
   el.innerHTML = "";
   if (!items.length) {
@@ -60,15 +77,18 @@ function renderBars(el, items, nameKey, kindKey, clickable) {
     const kindChip = kind ? `<span class="kind">${kind}</span>` : "";
     const label = it.assigned || null;
     const more = clickable ? `<button class="more" title="Actions">⋯</button>` : "";
+    const when = whenLabel(it);
+    const whenSpan = when ? `<span class="when" title="First – last activity in this period">${when}</span>` : "";
     li.innerHTML = `
-      <div class="fill" style="width:${pct}%"></div>
       <div class="row">
         ${kindChip}
-        <span class="name">${escapeHtml(name)}</span>
+        <span class="name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
         ${labelChip(label)}
+        ${whenSpan}
         <span class="time">${fmt(it.seconds)}</span>
         ${more}
-      </div>`;
+      </div>
+      <div class="track"><div class="fill" style="width:${pct}%"></div></div>`;
     if (clickable) {
       const tt = kind === "web" ? "domain" : kind === "app" ? "app" : (nameKey === "domain" ? "domain" : "app");
       li.addEventListener("click", (e) => {
@@ -81,6 +101,156 @@ function renderBars(el, items, nameKey, kindKey, clickable) {
       });
     }
     el.appendChild(li);
+  }
+}
+
+// Classify an activity item for the "Where time went" grouped view.
+// Known productive/unproductive label names win; anything else with a rule
+// → neutral; no rule → unlabeled.
+const PRODUCTIVE_LABELS = new Set(["verimli", "productive"]);
+const UNPRODUCTIVE_LABELS = new Set(["verimsiz", "unproductive"]);
+
+function categoryOf(item) {
+  if (!item.assigned) return "unlabeled";
+  const nm = (item.assigned.name || "").toLowerCase();
+  if (PRODUCTIVE_LABELS.has(nm)) return "productive";
+  if (UNPRODUCTIVE_LABELS.has(nm)) return "unproductive";
+  return "neutral";
+}
+
+const GROUP_META = [
+  { cat: "productive",   title: "Productive apps" },
+  { cat: "unproductive", title: "Unproductive apps" },
+  { cat: "neutral",      title: "Neutral apps" },
+  { cat: "unlabeled",    title: "Unlabeled" },
+];
+
+function renderGrouped(items) {
+  const el = document.getElementById("grouped");
+  el.innerHTML = "";
+  const minSec = (parseFloat(document.getElementById("min-dur").value) || 0) * 60;
+  const filtered = items.filter((it) => (it.seconds || 0) >= minSec);
+  if (!filtered.length) {
+    el.innerHTML = `<div class="group-empty">No activity over ${minSec/60}m. Lower the filter to see more.</div>`;
+    return;
+  }
+  const buckets = { productive: [], unproductive: [], neutral: [], unlabeled: [] };
+  for (const it of filtered) buckets[categoryOf(it)].push(it);
+
+  for (const { cat, title } of GROUP_META) {
+    const rows = buckets[cat];
+    if (!rows.length) continue;
+    rows.sort((a, b) => (b.seconds || 0) - (a.seconds || 0));
+    const total = rows.reduce((s, x) => s + (x.seconds || 0), 0);
+
+    const group = document.createElement("div");
+    group.className = "group";
+    const head = document.createElement("div");
+    head.className = `group-head ${cat}`;
+    head.innerHTML = `<span>${title} · ${fmt(total)}</span><span class="count">${rows.length}</span>`;
+    group.appendChild(head);
+
+    const grid = document.createElement("div");
+    grid.className = "group-grid";
+    for (const it of rows) {
+      const div = document.createElement("div");
+      div.className = "item";
+      const tt = it.kind === "web" ? "domain" : "app";
+      const when = whenLabel(it);
+      const whenSpan = when ? `<span class="when">${when}</span>` : "";
+      div.innerHTML = `
+        <span class="dot ${it.kind}"></span>
+        <span class="item-name" title="${escapeHtml(it.label)}">${escapeHtml(it.label)}</span>
+        ${whenSpan}
+        <span class="item-time">${fmt(it.seconds)}</span>
+        <button class="more" title="Actions">⋯</button>`;
+      div.addEventListener("click", (e) => {
+        if (e.target.closest(".more")) return;
+        openPicker(e.currentTarget, tt, it.label, it.assigned ? it.assigned.id : null);
+      });
+      div.querySelector(".more").addEventListener("click", (e) => {
+        e.stopPropagation();
+        openRowMenu(e.currentTarget, tt, it.label);
+      });
+      grid.appendChild(div);
+    }
+    group.appendChild(grid);
+    el.appendChild(group);
+  }
+}
+
+function renderTimeline(timeline) {
+  const el = document.getElementById("timeline");
+  const axisEl = document.getElementById("timeline-axis");
+  const hintEl = document.getElementById("timeline-hint");
+  el.innerHTML = "";
+  axisEl.innerHTML = "";
+  if (!timeline || !timeline.buckets || !timeline.buckets.length) {
+    el.innerHTML = '<div style="color:var(--muted); padding: 30px; text-align:center; flex:1;">No data yet.</div>';
+    return;
+  }
+  const bucketS = timeline.bucket_s;
+  const isHourly = bucketS <= 3600;
+  const isMultiHour = bucketS > 3600 && bucketS < 86400;
+  const isDaily = bucketS >= 86400;
+  hintEl.textContent = isHourly
+    ? "Each column is one hour of the day. Hover for details."
+    : isMultiHour
+      ? `Each column is ${Math.round(bucketS / 3600)} hours. Hover for details.`
+      : "Each column is one day. Hover for details.";
+
+  // Scale height to the bucket's capacity (bucketS) so partial hours show partial bars.
+  for (const b of timeline.buckets) {
+    const total = b.productive + b.unproductive + b.neutral + b.unlabeled + b.idle;
+    const fill = Math.min(1, total / bucketS);
+    const fillPct = fill * 100;
+    const col = document.createElement("div");
+    col.className = "bucket";
+    const seg = (cls, sec) => {
+      if (sec <= 0) return "";
+      const pct = (sec / Math.max(total, 1)) * fillPct;
+      return `<div class="seg ${cls}" style="height:${pct}%"></div>`;
+    };
+    // Order bottom-up (column-reverse flex): productive at base, then neutral/unlabeled, idle, unproductive on top.
+    const body =
+      seg("productive",   b.productive) +
+      seg("neutral",      b.neutral) +
+      seg("unlabeled",    b.unlabeled) +
+      seg("unproductive", b.unproductive) +
+      seg("idle",         b.idle);
+    const when = new Date(b.t * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    const tipHead = isDaily
+      ? when.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
+      : isMultiHour
+        ? `${pad(when.getHours())}:00 – ${pad((when.getHours() + Math.round(bucketS / 3600)) % 24)}:00`
+        : `${pad(when.getHours())}:00 – ${pad((when.getHours() + 1) % 24)}:00`;
+    const tipLine = (label, sec) => sec > 0 ? `\n${label}: ${fmt(sec)}` : "";
+    const tipText =
+      tipHead +
+      tipLine("Productive",   b.productive) +
+      tipLine("Unproductive", b.unproductive) +
+      tipLine("Neutral",      b.neutral) +
+      tipLine("Unlabeled",    b.unlabeled) +
+      tipLine("Idle",         b.idle);
+    col.innerHTML = body + `<div class="tip">${escapeHtml(tipText).replace(/\n/g, "<br>")}</div>`;
+    el.appendChild(col);
+  }
+
+  // Axis: show ~6-8 evenly-spaced ticks.
+  const n = timeline.buckets.length;
+  const target = Math.min(8, n);
+  const step = Math.max(1, Math.round(n / target));
+  for (let i = 0; i < n; i++) {
+    const span = document.createElement("span");
+    if (i % step === 0 || i === n - 1) {
+      const when = new Date(timeline.buckets[i].t * 1000);
+      const pad = (nn) => String(nn).padStart(2, "0");
+      span.textContent = isDaily
+        ? when.toLocaleDateString(undefined, { month: "numeric", day: "numeric" })
+        : `${pad(when.getHours())}`;
+    }
+    axisEl.appendChild(span);
   }
 }
 
@@ -97,12 +267,12 @@ function renderLabelBars(el, items) {
     li.classList.add("nonclick");
     const color = it.color || "#6b7280";
     li.innerHTML = `
-      <div class="fill" style="width:${pct}%; background:${color}33"></div>
       <div class="row">
         <span class="chip-label" style="background:${color}">${escapeHtml(it.name)}</span>
         <span class="name"></span>
         <span class="time">${fmt(it.seconds)}</span>
-      </div>`;
+      </div>
+      <div class="track"><div class="fill" style="width:${pct}%; background:${color}"></div></div>`;
     el.appendChild(li);
   }
 }
@@ -329,7 +499,7 @@ function parseCsv(text) {
   return rows.filter(r => r.some(c => c.length));
 }
 
-function parseFilenameDate(name) {
+function parseFilenameDateClockify(name) {
   // Clockify naming: ..._MM_DD_YYYY-MM_DD_YYYY.csv — return the END date
   const m = name.match(/(\d{2})_(\d{2})_(\d{4})(?!.*\d)/);
   if (!m) return null;
@@ -337,35 +507,172 @@ function parseFilenameDate(name) {
   return `${yyyy}-${mm}-${dd}T23:59`;
 }
 
-function pickDuration(row, headerIndex) {
-  // prefer "Time (decimal)" for simple float parsing; fallback to HH:MM:SS
-  const d = row[headerIndex.decimal];
-  if (d !== undefined && !isNaN(parseFloat(d))) {
-    return Math.round(parseFloat(d) * 3600);
+function hmsToSeconds(s) {
+  if (!s) return 0;
+  const parts = s.split(":").map(Number);
+  if (parts.length === 3 && parts.every(n => !isNaN(n))) return parts[0]*3600 + parts[1]*60 + parts[2];
+  if (parts.length === 2 && parts.every(n => !isNaN(n))) return parts[0]*60 + parts[1];
+  return 0;
+}
+
+function detectFormat(header) {
+  const h = header.map(s => s.trim().toLowerCase());
+  if (h.includes("date") && h.includes("productivity level") && h.includes("app/url name")) {
+    return "desktime";
   }
-  const h = row[headerIndex.hms];
-  if (h) {
-    const parts = h.split(":").map(Number);
-    if (parts.length === 3 && parts.every(n => !isNaN(n))) {
-      return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (h.includes("project") && (h.includes("time (decimal)") || h.includes("time (h)"))) {
+    return "clockify";
+  }
+  return null;
+}
+
+// DeskTime's "Productivity level" → existing seeded Omrum labels.
+const DESKTIME_LABEL = { productive: "verimli", neutral: "genel", unproductive: "verimsiz" };
+
+// DeskTime lists generic browser process rows alongside per-URL rows. Importing
+// both would double-count browser time, so we keep the URL-level rows only.
+const DESKTIME_SKIP_NAMES = new Set([
+  "google chrome", "google-chrome-stable", "msedge", "microsoft edge",
+  "firefox", "firefox_firefox", "safari", "unknown app",
+]);
+
+function classifyDeskTimeName(name) {
+  // Chrome-internal: chrome://newtab, chrome-extension://..., about:blank
+  if (/^(chrome:|chrome-extension:|about:)/i.test(name)) return { app: "chrome", domain: null };
+  // File paths ("///home/…"): show under a "file" bucket
+  if (name.startsWith("///") || name.startsWith("/")) return { app: "file", domain: null };
+  // Domain: first path-segment, must be all-lowercase dotted hostname.
+  // This correctly excludes "Org.gnome.Nautilus" / "Io.snapcraft.Store".
+  const host = name.split(/[\/?#]/)[0];
+  if (/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host)) {
+    const normalized = host.startsWith("www.") ? host.slice(4) : host;
+    return { app: "chrome", domain: normalized };
+  }
+  // Match the live tracker, which lowercases every process name — keeps
+  // "Code" (DeskTime) and "code" (daemon) in one bucket.
+  return { app: name.toLowerCase(), domain: null };
+}
+
+function parseClockify(rows) {
+  const header = rows[0].map(h => h.trim().toLowerCase());
+  const hi = {
+    project: header.indexOf("project"),
+    description: header.indexOf("description"),
+    hms: header.indexOf("time (h)"),
+    decimal: header.indexOf("time (decimal)"),
+  };
+  const events = [];
+  let total = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const app = (r[hi.project] || "").trim();
+    const title = hi.description >= 0 ? (r[hi.description] || "").trim() : "";
+    let sec = 0;
+    const d = r[hi.decimal];
+    if (d !== undefined && !isNaN(parseFloat(d))) sec = Math.round(parseFloat(d) * 3600);
+    else if (hi.hms >= 0) sec = hmsToSeconds((r[hi.hms] || "").trim());
+    if (!app || sec <= 0) continue;
+    events.push({ app, title, seconds: sec });
+    total += sec;
+  }
+  return { format: "clockify", events, totalSeconds: total, rowCount: events.length, usesRowDates: false };
+}
+
+function parseDeskTime(rows) {
+  const header = rows[0].map(h => h.trim().toLowerCase());
+  const hi = {
+    date: header.indexOf("date"),
+    name: header.indexOf("app/url name"),
+    title: header.indexOf("window title"),
+    prod: header.indexOf("productivity level"),
+    time: header.indexOf("time"),
+  };
+
+  const byDate = new Map();
+  const topTargets = {};
+  const labelTotals = {};
+  let total = 0;
+  let skipped = 0;
+
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    const date = (r[hi.date] || "").trim();
+    const name = (r[hi.name] || "").trim();
+    const title = hi.title >= 0 ? (r[hi.title] || "").trim() : "";
+    const prod = (r[hi.prod] || "").trim().toLowerCase();
+    const timeStr = hi.time >= 0 ? (r[hi.time] || "").trim() : "";
+    if (!date || !name || !timeStr) continue;
+    const sec = hmsToSeconds(timeStr);
+    if (sec <= 0) continue;
+    if (DESKTIME_SKIP_NAMES.has(name.toLowerCase())) { skipped++; continue; }
+
+    const { app, domain } = classifyDeskTimeName(name);
+    const label = DESKTIME_LABEL[prod] || null;
+
+    if (!byDate.has(date)) byDate.set(date, []);
+    byDate.get(date).push({ app, domain, title: title || null, seconds: sec, label });
+
+    total += sec;
+    const key = domain || app;
+    topTargets[key] = (topTargets[key] || 0) + sec;
+    if (label) labelTotals[label] = (labelTotals[label] || 0) + sec;
+  }
+
+  // Stack events per-day: each day's events run sequentially from 00:00 onward,
+  // so they don't overlap and show up on the correct calendar day.
+  const events = [];
+  for (const [date, dayEvents] of byDate) {
+    const dayStart = new Date(date + "T00:00:00").getTime() / 1000;
+    let cursorTs = dayStart;
+    for (const ev of dayEvents) {
+      cursorTs += ev.seconds;
+      events.push({
+        app: ev.app, domain: ev.domain, title: ev.title,
+        seconds: ev.seconds, when_ts: cursorTs, label: ev.label,
+      });
     }
   }
-  return 0;
+
+  const dates = Array.from(byDate.keys()).sort();
+  const dateRange = dates.length ? `${dates[0]} → ${dates[dates.length - 1]} (${dates.length} days)` : "";
+
+  return {
+    format: "desktime", events, totalSeconds: total, rowCount: events.length,
+    topTargets, labelTotals, dateRange, skipped, usesRowDates: true,
+  };
 }
 
 function buildPreview(parsed) {
   if (!parsed) return "Select a file to see a preview.";
-  const topApps = {};
-  for (const ev of parsed.events) {
-    topApps[ev.app] = (topApps[ev.app] || 0) + ev.seconds;
-  }
-  const sorted = Object.entries(topApps).sort((a, b) => b[1] - a[1]).slice(0, 10);
   const totalH = (parsed.totalSeconds / 3600).toFixed(1);
-  const lines = [
-    `${parsed.events.length} rows, ${totalH}h total`,
-    ...sorted.map(([a, s]) => `  ${a.padEnd(16)} ${(s/3600).toFixed(1)}h`),
-  ];
-  if (parsed.events.length > sorted.length) lines.push(`  … and ${parsed.events.length - sorted.length} more rows`);
+  const lines = [];
+  if (parsed.format === "desktime") {
+    lines.push(`Detected: DeskTime export`);
+    lines.push(`${parsed.rowCount} events, ${totalH}h total`);
+    if (parsed.dateRange) lines.push(`Range: ${parsed.dateRange}`);
+    if (parsed.skipped) lines.push(`Skipped ${parsed.skipped} generic browser row(s) to avoid double-counting.`);
+    const byLabel = Object.entries(parsed.labelTotals).sort((a, b) => b[1] - a[1]);
+    if (byLabel.length) {
+      lines.push("");
+      lines.push("Auto-labeled from Productivity column:");
+      for (const [l, s] of byLabel) lines.push(`  ${l.padEnd(10)} ${(s / 3600).toFixed(1)}h`);
+    }
+    const sorted = Object.entries(parsed.topTargets).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    if (sorted.length) {
+      lines.push("");
+      lines.push("Top apps / websites:");
+      for (const [a, s] of sorted) lines.push(`  ${a.padEnd(24)} ${(s / 3600).toFixed(1)}h`);
+    }
+  } else {
+    // Clockify
+    lines.push(`Detected: Clockify summary export`);
+    lines.push(`${parsed.events.length} rows, ${totalH}h total`);
+    const topApps = {};
+    for (const ev of parsed.events) topApps[ev.app] = (topApps[ev.app] || 0) + ev.seconds;
+    const sorted = Object.entries(topApps).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    for (const [a, s] of sorted) lines.push(`  ${a.padEnd(16)} ${(s / 3600).toFixed(1)}h`);
+  }
   return lines.join("\n");
 }
 
@@ -373,8 +680,6 @@ async function onImportFile(e) {
   const f = e.target.files[0];
   if (!f) return;
   importFilename.textContent = f.name;
-  const fromName = parseFilenameDate(f.name);
-  if (fromName) importAnchor.value = fromName;
 
   const text = await f.text();
   const rows = parseCsv(text);
@@ -384,45 +689,49 @@ async function onImportFile(e) {
     importParsed = null;
     return;
   }
-  const header = rows[0].map(h => h.trim().toLowerCase());
-  const hi = {
-    project: header.indexOf("project"),
-    description: header.indexOf("description"),
-    hms: header.indexOf("time (h)"),
-    decimal: header.indexOf("time (decimal)"),
-  };
-  if (hi.project < 0 || (hi.hms < 0 && hi.decimal < 0)) {
-    importPreview.textContent = "Unrecognized CSV. Expected Clockify columns: Project, Description, Time (h), Time (decimal).";
+  const format = detectFormat(rows[0]);
+  if (!format) {
+    importPreview.textContent =
+      "Unrecognized CSV. Supported formats:\n" +
+      "  • Clockify Summary (columns: Project, Description, Time (decimal))\n" +
+      "  • DeskTime Export  (columns: Date, App/URL name, Productivity level, Time)";
     importGo.disabled = true;
     importParsed = null;
     return;
   }
-  const events = [];
-  let total = 0;
-  for (let i = 1; i < rows.length; i++) {
-    const r = rows[i];
-    const app = (r[hi.project] || "").trim();
-    const title = hi.description >= 0 ? (r[hi.description] || "").trim() : "";
-    const sec = pickDuration(r, hi);
-    if (!app || sec <= 0) continue;
-    events.push({ app, title, seconds: sec });
-    total += sec;
+  importParsed = format === "desktime" ? parseDeskTime(rows) : parseClockify(rows);
+
+  // DeskTime has per-row dates and per-row labels; the anchor field is hidden
+  // and the label field becomes an optional override.
+  const anchorWrap = document.getElementById("import-anchor-wrap");
+  if (anchorWrap) anchorWrap.style.display = format === "desktime" ? "none" : "";
+  if (format === "desktime") {
+    importLabel.value = ""; // default: use per-row productivity
+    importLabel.placeholder = "blank = use DeskTime productivity per row";
+  } else {
+    importLabel.placeholder = "e.g. verimli (blank = none)";
+    if (!importLabel.value) importLabel.value = "verimli";
+    const fromName = parseFilenameDateClockify(f.name);
+    if (fromName) importAnchor.value = fromName;
   }
-  importParsed = { events, totalSeconds: total, rowCount: events.length };
+
   importPreview.textContent = buildPreview(importParsed);
-  importGo.disabled = events.length === 0;
+  importGo.disabled = importParsed.events.length === 0;
 }
 
 function openImport() {
   importParsed = null;
   importFile.value = "";
-  importFilename.textContent = "Choose a Clockify summary .csv…";
+  importFilename.textContent = "Choose a Clockify or DeskTime .csv…";
   importPreview.textContent = "Select a file to see a preview.";
   importGo.disabled = true;
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
   importAnchor.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T23:59`;
   importLabel.value = "verimli";
+  importLabel.placeholder = "e.g. verimli (blank = none)";
+  const anchorWrap = document.getElementById("import-anchor-wrap");
+  if (anchorWrap) anchorWrap.style.display = ""; // reset; hidden later for DeskTime
   importModal.classList.remove("hidden");
 }
 
@@ -435,16 +744,35 @@ importFile.addEventListener("change", onImportFile);
 importGo.addEventListener("click", async () => {
   if (!importParsed) return;
   importGo.disabled = true;
-  // Place events ending at the anchor, stacking backwards so they never overlap.
-  const anchor = importAnchor.value ? new Date(importAnchor.value) : new Date();
-  let cursorTs = anchor.getTime() / 1000;
-  const out = [];
-  for (const ev of importParsed.events) {
-    out.push({ app: ev.app, title: ev.title || null, seconds: ev.seconds, when_ts: cursorTs });
-    cursorTs -= ev.seconds;
+
+  const overrideLabel = (importLabel.value || "").trim() || null;
+  let events;
+  let titleTag;
+
+  if (importParsed.usesRowDates) {
+    // DeskTime: events already carry when_ts (per their own date) and a per-row
+    // `label` from Productivity. An override label, if provided, wins.
+    events = importParsed.events.map(ev => ({
+      app: ev.app, domain: ev.domain || null, title: ev.title || null,
+      seconds: ev.seconds, when_ts: ev.when_ts,
+      label: overrideLabel ? null : (ev.label || null),
+    }));
+    titleTag = "[desktime]";
+  } else {
+    // Clockify: no per-row dates; stack events ending at the chosen anchor.
+    const anchor = importAnchor.value ? new Date(importAnchor.value) : new Date();
+    let cursorTs = anchor.getTime() / 1000;
+    events = [];
+    for (const ev of importParsed.events) {
+      events.push({ app: ev.app, title: ev.title || null, seconds: ev.seconds, when_ts: cursorTs });
+      cursorTs -= ev.seconds;
+    }
+    titleTag = "[clockify]";
   }
-  const apply = (importLabel.value || "").trim() || null;
-  const r = await api("POST", "/api/import", { events: out, apply_label: apply, title_tag: "[clockify]" });
+
+  const r = await api("POST", "/api/import", {
+    events, apply_label: overrideLabel, title_tag: titleTag,
+  });
   if (r.error) {
     importGo.disabled = false;
     return alert("Import failed: " + r.error);
@@ -452,7 +780,48 @@ importGo.addEventListener("click", async () => {
   importModal.classList.add("hidden");
   await refreshLabels();
   await load();
-  alert(`Imported ${r.inserted} events. ${r.labeled_targets ? `Labeled ${r.labeled_targets} projects as "${apply}".` : ""}`);
+  const labelPart = r.labeled_targets
+    ? ` Created ${r.labeled_targets} label rule(s).`
+    : "";
+  alert(`Imported ${r.inserted} events.${labelPart}`);
+});
+
+// ---------- settings ----------
+const settingsModal = document.getElementById("settings-modal");
+const settingsIdle = document.getElementById("settings-idle");
+const settingsForm = document.getElementById("settings-form");
+let settingsDefaults = { idle_threshold_default_s: 300 };
+
+async function openSettings() {
+  const s = await api("GET", "/api/settings");
+  settingsDefaults = s;
+  settingsIdle.value = (Number(s.idle_threshold_s) / 60).toFixed(1).replace(/\.0$/, "");
+  document.getElementById("settings-poll").textContent = `${s.poll_interval_s}s`;
+  document.getElementById("settings-http").textContent = `http://${s.http_host}:${s.http_port}`;
+  document.getElementById("settings-data").textContent = s.data_dir;
+  settingsModal.classList.remove("hidden");
+  settingsIdle.focus();
+}
+
+document.getElementById("open-settings").addEventListener("click", openSettings);
+document.getElementById("settings-close").addEventListener("click", () => settingsModal.classList.add("hidden"));
+document.getElementById("settings-cancel").addEventListener("click", () => settingsModal.classList.add("hidden"));
+settingsModal.addEventListener("click", (e) => { if (e.target === settingsModal) settingsModal.classList.add("hidden"); });
+
+document.getElementById("settings-reset").addEventListener("click", () => {
+  const def = Number(settingsDefaults.idle_threshold_default_s) || 300;
+  settingsIdle.value = (def / 60).toFixed(1).replace(/\.0$/, "");
+});
+
+settingsForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const mins = parseFloat(settingsIdle.value);
+  if (!isFinite(mins) || mins < 0.5) return alert("Idle threshold must be at least 0.5 minutes.");
+  const seconds = Math.round(mins * 60);
+  const r = await api("POST", "/api/settings", { idle_threshold_s: seconds });
+  if (r.error) return alert("Save failed: " + r.error);
+  settingsModal.classList.add("hidden");
+  load();
 });
 
 // ---------- restart ----------
@@ -502,12 +871,33 @@ async function load() {
   document.getElementById("label-window").textContent = data.window.label;
   document.getElementById("active").textContent = fmt(data.totals.active_seconds);
   document.getElementById("idle").textContent = fmt(data.totals.idle_seconds);
-  document.getElementById("total").textContent = fmt(data.totals.total_seconds);
 
+  const stats = data.stats || {};
+  document.getElementById("stat-productive").textContent = fmt(stats.productive_seconds || 0);
+  document.getElementById("stat-unproductive").textContent = fmt(stats.unproductive_seconds || 0);
+  const eff = stats.effectiveness || 0;
+  document.getElementById("stat-effectiveness").textContent =
+    eff > 0 ? `${(eff * 100).toFixed(0)}%` : "—";
+  document.getElementById("stat-effectiveness-sub").textContent =
+    stats.productivity > 0 ? `${(stats.productivity * 100).toFixed(0)}% of tracked` : "productive / (prod + unprod)";
+  if (stats.peak && stats.peak.productive > 0) {
+    const pd = new Date(stats.peak.t * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    const bSec = stats.peak.bucket_s || 3600;
+    const endD = new Date((stats.peak.t + bSec) * 1000);
+    const label = bSec >= 86400
+      ? pd.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
+      : `${pad(pd.getHours())}:${pad(pd.getMinutes())}–${pad(endD.getHours())}:${pad(endD.getMinutes())}`;
+    document.getElementById("stat-peak").textContent = label;
+    document.getElementById("stat-peak-sub").textContent = `${fmt(stats.peak.productive)} productive`;
+  } else {
+    document.getElementById("stat-peak").textContent = "—";
+    document.getElementById("stat-peak-sub").textContent = "no productive time";
+  }
+
+  renderTimeline(data.timeline);
   renderLabelBars(document.getElementById("by-label"), data.by_label);
-  renderBars(document.getElementById("activity"), data.activity, "label", "kind", true);
-  renderBars(document.getElementById("apps"), data.apps, "app", null, true);
-  renderBars(document.getElementById("domains"), data.domains, "domain", null, true);
+  renderGrouped(data.activity);
 
   document.getElementById("prev").dataset.anchor = data.window.prev;
   document.getElementById("next").dataset.anchor = data.window.next;
@@ -576,6 +966,18 @@ document.querySelectorAll(".range-presets button").forEach((b) =>
     load();
   })
 );
+
+// ---------- min-duration filter ----------
+const minDurInput = document.getElementById("min-dur");
+const savedMin = localStorage.getItem("omrum_min_dur_min");
+if (savedMin !== null) minDurInput.value = savedMin;
+let minDurTimer = null;
+minDurInput.addEventListener("input", () => {
+  const v = Math.max(0, parseFloat(minDurInput.value) || 0);
+  localStorage.setItem("omrum_min_dur_min", String(v));
+  clearTimeout(minDurTimer);
+  minDurTimer = setTimeout(load, 120);
+});
 
 (async () => {
   await refreshLabels();
