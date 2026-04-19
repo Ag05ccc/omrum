@@ -110,8 +110,8 @@ class Handler(BaseHTTPRequestHandler):
 
             # Pick a timeline bucket that renders nicely across periods.
             span = max(1.0, win.end_ts - win.start_ts)
-            if span <= 36 * 3600:           # day → 1h bars
-                bucket_s = 3600.0
+            if span <= 36 * 3600:           # day → 5-minute candles
+                bucket_s = 300.0
             elif span <= 10 * 86400:        # week/short range → 4h bars
                 bucket_s = 4 * 3600.0
             else:                            # month/year/range → 1 day bars
