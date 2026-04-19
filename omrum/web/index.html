@@ -4,32 +4,59 @@
     <meta charset="utf-8" />
     <title>Omrum</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" />
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <header>
-      <h1>Omrum</h1>
-      <nav class="tabs">
-        <button data-period="day"   class="active">Day</button>
-        <button data-period="week">Week</button>
-        <button data-period="month">Month</button>
-        <button data-period="year">Year</button>
-        <button data-period="range">Range</button>
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M12 7v5l3 2"></path>
+          </svg>
+        </div>
+        <h1>Omrum</h1>
+      </div>
+
+      <nav class="tabs" role="tablist" aria-label="Period">
+        <span class="tabs-pill" aria-hidden="true"></span>
+        <button data-period="day"   class="active" role="tab" aria-selected="true">Day</button>
+        <button data-period="week"  role="tab" aria-selected="false">Week</button>
+        <button data-period="month" role="tab" aria-selected="false">Month</button>
+        <button data-period="year"  role="tab" aria-selected="false">Year</button>
+        <button data-period="range" role="tab" aria-selected="false">Range</button>
       </nav>
+
       <div class="head-actions">
-        <button id="add-time" class="ghost">+ Add time</button>
-        <button id="import-csv" class="ghost">Import CSV</button>
-        <button id="manage-labels" class="ghost">Manage labels</button>
-        <button id="open-settings" class="ghost" title="Settings">⚙ Settings</button>
-        <button id="restart-daemon" class="ghost" title="Restart the tracker daemon">↻ Restart</button>
+        <button id="add-time" class="btn-primary" title="Add time manually (A)">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span>Add time</span>
+        </button>
+        <button id="import-csv" class="btn-ghost icon-label" title="Import CSV (I)">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+          <span>Import</span>
+        </button>
+        <button id="help-keys" class="btn-icon" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.9.4-1.5 1-1.5 2v.7"/><circle cx="12" cy="17" r="0.8" fill="currentColor"/></svg>
+        </button>
+        <button id="head-overflow" class="btn-icon" title="More" aria-label="More actions" aria-haspopup="menu">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+        </button>
       </div>
     </header>
 
-    <section class="range">
-      <button id="prev" title="Previous period">‹</button>
-      <div id="label-window" class="label">—</div>
-      <button id="next" title="Next period">›</button>
-      <button id="today" class="today">Today</button>
+    <section class="range-bar">
+      <button id="prev" class="nav-arrow" aria-label="Previous period" title="Previous period (←)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+      </button>
+      <div id="label-window" class="range-label">—</div>
+      <button id="next" class="nav-arrow" aria-label="Next period" title="Next period (→)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <button id="today" class="btn-ghost today-btn" title="Jump to today (T)">Today</button>
     </section>
 
     <section id="range-pickers" class="range-pickers hidden">
@@ -37,25 +64,90 @@
       <label>To <input id="range-end" type="date" /></label>
       <button id="range-apply">Show</button>
       <div class="range-presets">
-        <button data-preset="7">Last 7 days</button>
-        <button data-preset="30">Last 30 days</button>
-        <button data-preset="90">Last 90 days</button>
-        <button data-preset="365">Last 365 days</button>
+        <button data-preset="7">7d</button>
+        <button data-preset="30">30d</button>
+        <button data-preset="90">90d</button>
+        <button data-preset="365">365d</button>
       </div>
     </section>
 
-    <section class="totals">
-      <div class="stat"><span class="tlabel">Active</span><span id="active" class="value">—</span></div>
-      <div class="stat stat-productive"><span class="tlabel">Productive</span><span id="stat-productive" class="value">—</span></div>
-      <div class="stat stat-unproductive"><span class="tlabel">Unproductive</span><span id="stat-unproductive" class="value">—</span></div>
-      <div class="stat"><span class="tlabel">Effectiveness</span><span id="stat-effectiveness" class="value">—</span><span id="stat-effectiveness-sub" class="sub">—</span></div>
-      <div class="stat"><span class="tlabel">Peak hour</span><span id="stat-peak" class="value">—</span><span id="stat-peak-sub" class="sub">—</span></div>
-      <div class="stat"><span class="tlabel">Idle</span><span id="idle" class="value">—</span></div>
+    <!-- Hero: productivity score + secondary stats -->
+    <section class="hero">
+      <article class="score-card" aria-label="Productivity score">
+        <div class="score-head">
+          <span class="eyebrow">Productivity</span>
+          <span id="score-badge" class="badge badge-muted">—</span>
+        </div>
+        <div class="score-body">
+          <div class="score-ring" aria-hidden="true">
+            <svg viewBox="0 0 120 120" width="180" height="180">
+              <defs>
+                <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="var(--accent)"/>
+                  <stop offset="100%" stop-color="var(--accent-2)"/>
+                </linearGradient>
+              </defs>
+              <circle cx="60" cy="60" r="52" class="ring-track"/>
+              <circle id="ring-fill" cx="60" cy="60" r="52" class="ring-fill"
+                      stroke="url(#ringGrad)"
+                      stroke-dasharray="326.7" stroke-dashoffset="326.7"/>
+            </svg>
+            <div class="score-center">
+              <div id="score-value" class="score-value">—</div>
+              <div class="score-unit">/ 100</div>
+            </div>
+          </div>
+          <div class="score-meta">
+            <div id="score-narrative" class="score-narrative">Crunching numbers…</div>
+            <dl class="score-facts">
+              <div>
+                <dt>Productive</dt>
+                <dd id="score-productive" class="pos">—</dd>
+              </div>
+              <div>
+                <dt>Unproductive</dt>
+                <dd id="score-unproductive" class="neg">—</dd>
+              </div>
+              <div>
+                <dt>Peak hour</dt>
+                <dd id="score-peak">—</dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      </article>
+
+      <div class="stat-grid">
+        <article class="stat-tile" data-k="active">
+          <header><span class="eyebrow">Active</span><span class="trend" data-delta></span></header>
+          <div class="stat-value" id="stat-active">—</div>
+          <svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+        </article>
+        <article class="stat-tile pos" data-k="productive">
+          <header><span class="eyebrow">Productive</span><span class="trend" data-delta></span></header>
+          <div class="stat-value" id="stat-productive">—</div>
+          <svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+        </article>
+        <article class="stat-tile neg" data-k="unproductive">
+          <header><span class="eyebrow">Unproductive</span><span class="trend" data-delta></span></header>
+          <div class="stat-value" id="stat-unproductive">—</div>
+          <svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+        </article>
+        <article class="stat-tile muted" data-k="idle">
+          <header><span class="eyebrow">Idle</span><span class="trend" data-delta></span></header>
+          <div class="stat-value" id="stat-idle">—</div>
+          <svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+        </article>
+      </div>
     </section>
 
+    <!-- Timeline -->
     <section class="timeline-section">
       <div class="timeline-head">
-        <h2>Productivity timeline</h2>
+        <div>
+          <h2>Productivity timeline</h2>
+          <p class="hint" id="timeline-hint">Each column is one hour. Hover for details.</p>
+        </div>
         <div class="legend">
           <span><i class="sw productive"></i>Productive</span>
           <span><i class="sw unproductive"></i>Unproductive</span>
@@ -64,23 +156,37 @@
           <span><i class="sw idle"></i>Idle</span>
         </div>
       </div>
-      <p class="hint" id="timeline-hint">Each column is one hour. Hover for details.</p>
-      <div id="timeline" class="timeline"></div>
+      <div class="timeline-wrap">
+        <div id="timeline" class="timeline"></div>
+        <div id="timeline-overlay" class="timeline-overlay" aria-hidden="true"></div>
+      </div>
       <div id="timeline-axis" class="timeline-axis"></div>
     </section>
 
-    <main>
-      <section class="wide">
-        <h2>By category</h2>
-        <p class="hint">Hours per label. Click a row below to (re)label it.</p>
-        <ul id="by-label" class="bars"></ul>
-      </section>
+    <!-- By category -->
+    <section class="category-section">
+      <div class="section-head">
+        <div>
+          <h2>By category</h2>
+          <p class="hint" id="category-hint">Share of tracked time per label. Click a row to filter below.</p>
+        </div>
+        <button id="category-clear" class="btn-ghost small hidden">Clear filter</button>
+      </div>
+      <div id="stacked-bar" class="stacked-bar" role="img" aria-label="Category breakdown"></div>
+      <div id="category-table" class="category-table"></div>
+    </section>
 
-      <section class="wide">
-        <div class="where-head">
-          <div>
-            <h2>Where time went</h2>
-            <p class="hint">Grouped by productivity. Click any item to change its label.</p>
+    <!-- Where time went -->
+    <section class="where-section">
+      <div class="section-head">
+        <div>
+          <h2>Where time went</h2>
+          <p class="hint">Click an app or site to (re)label. Sort and filter on the right.</p>
+        </div>
+        <div class="where-controls">
+          <div class="seg-small" role="group" aria-label="Sort by">
+            <button data-sort="duration" class="active">Duration</button>
+            <button data-sort="name">Name</button>
           </div>
           <label class="min-dur" title="Hide rows shorter than this">
             Hide under
@@ -88,11 +194,11 @@
             min
           </label>
         </div>
-        <div id="grouped" class="grouped"></div>
-      </section>
-    </main>
+      </div>
+      <div id="grouped" class="grouped"></div>
+    </section>
 
-    <!-- Label picker popover (shown near a clicked bar) -->
+    <!-- Label picker popover -->
     <div id="picker" class="picker hidden">
       <div class="picker-title">Assign label</div>
       <ul id="picker-list"></ul>
@@ -101,13 +207,37 @@
       </div>
     </div>
 
-    <!-- Row actions popover (shown when clicking ⋯) -->
+    <!-- Row actions popover -->
     <div id="rowmenu" class="picker hidden">
       <div class="picker-title" id="rowmenu-target">—</div>
       <ul>
-        <li id="rowmenu-del-period">🗑 Delete time in this period</li>
-        <li id="rowmenu-del-all" class="danger">🗑 Delete all time (all history)</li>
+        <li id="rowmenu-del-period">Delete time in this period</li>
+        <li id="rowmenu-del-all" class="danger">Delete all time (all history)</li>
       </ul>
+    </div>
+
+    <!-- Overflow menu -->
+    <div id="overflow-menu" class="picker hidden" role="menu">
+      <div class="picker-title">More</div>
+      <ul>
+        <li id="ov-labels" role="menuitem">Manage labels</li>
+        <li id="ov-settings" role="menuitem">Settings</li>
+        <li id="ov-restart" role="menuitem">Restart daemon</li>
+      </ul>
+    </div>
+
+    <!-- Keyboard help popover -->
+    <div id="help-menu" class="picker wide hidden" role="menu" aria-label="Keyboard shortcuts">
+      <div class="picker-title">Keyboard shortcuts</div>
+      <dl class="keys">
+        <dt><kbd>T</kbd></dt><dd>Jump to today</dd>
+        <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous / next period</dd>
+        <dt><kbd>D</kbd> <kbd>W</kbd> <kbd>M</kbd> <kbd>Y</kbd> <kbd>R</kbd></dt><dd>Switch period</dd>
+        <dt><kbd>A</kbd></dt><dd>Add time</dd>
+        <dt><kbd>I</kbd></dt><dd>Import CSV</dd>
+        <dt><kbd>?</kbd></dt><dd>This help</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close popovers</dd>
+      </dl>
     </div>
 
     <!-- Import CSV modal -->
@@ -115,7 +245,7 @@
       <div class="modal-box wide">
         <header>
           <h3>Import CSV</h3>
-          <button id="import-close" class="ghost">✕</button>
+          <button id="import-close" class="btn-icon" aria-label="Close">×</button>
         </header>
         <div class="import-body">
           <label class="drop">
@@ -132,8 +262,8 @@
           </div>
           <div id="import-preview" class="import-preview">Select a file to see a preview.</div>
           <div class="add-actions">
-            <button type="button" id="import-cancel" class="ghost">Cancel</button>
-            <button type="button" id="import-go" disabled>Import</button>
+            <button type="button" id="import-cancel" class="btn-ghost">Cancel</button>
+            <button type="button" id="import-go" class="btn-primary" disabled>Import</button>
           </div>
         </div>
       </div>
@@ -144,7 +274,7 @@
       <div class="modal-box">
         <header>
           <h3>Settings</h3>
-          <button id="settings-close" class="ghost">✕</button>
+          <button id="settings-close" class="btn-icon" aria-label="Close">×</button>
         </header>
         <form id="settings-form" class="add-form">
           <label>Idle threshold (minutes)
@@ -153,7 +283,7 @@
           <p class="hint settings-hint">
             Time with no keyboard or mouse activity is ignored after this many minutes.
             Idle spans are tagged and excluded from every panel except the <em>Idle</em> total.
-            Changes take effect on the next poll (within a few seconds); existing spans are not reclassified.
+            Changes take effect on the next poll; existing spans are not reclassified.
           </p>
           <dl class="settings-readonly">
             <dt>Polling interval</dt><dd id="settings-poll">—</dd>
@@ -161,9 +291,9 @@
             <dt>Data directory</dt><dd id="settings-data">—</dd>
           </dl>
           <div class="add-actions">
-            <button type="button" id="settings-reset" class="ghost" title="Restore the built-in default">Reset to default</button>
-            <button type="button" id="settings-cancel" class="ghost">Cancel</button>
-            <button type="submit">Save</button>
+            <button type="button" id="settings-reset" class="btn-ghost" title="Restore the built-in default">Reset to default</button>
+            <button type="button" id="settings-cancel" class="btn-ghost">Cancel</button>
+            <button type="submit" class="btn-primary">Save</button>
           </div>
         </form>
       </div>
@@ -174,7 +304,7 @@
       <div class="modal-box">
         <header>
           <h3>Add time</h3>
-          <button id="add-close" class="ghost">✕</button>
+          <button id="add-close" class="btn-icon" aria-label="Close">×</button>
         </header>
         <form id="add-form" class="add-form">
           <label>App (required if no website)
@@ -191,8 +321,8 @@
             <input id="add-when" type="datetime-local" />
           </label>
           <div class="add-actions">
-            <button type="button" id="add-cancel" class="ghost">Cancel</button>
-            <button type="submit">Add</button>
+            <button type="button" id="add-cancel" class="btn-ghost">Cancel</button>
+            <button type="submit" class="btn-primary">Add</button>
           </div>
         </form>
       </div>
@@ -203,17 +333,17 @@
       <div class="modal-box">
         <header>
           <h3>Labels</h3>
-          <button id="modal-close" class="ghost">✕</button>
+          <button id="modal-close" class="btn-icon" aria-label="Close">×</button>
         </header>
         <ul id="label-list" class="label-list"></ul>
         <form id="label-form" class="label-form">
           <input id="new-name" placeholder="New label name" required />
-          <input id="new-color" type="color" value="#4f8cff" />
-          <button type="submit">Add</button>
+          <input id="new-color" type="color" value="#2dd4bf" />
+          <button type="submit" class="btn-primary">Add</button>
         </form>
       </div>
     </div>
 
-    <script src="/app.js"></script>
+    <script type="module" src="/app.js"></script>
   </body>
 </html>

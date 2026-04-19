@@ -1,3 +1,10 @@
+// ============================================================
+// Omrum dashboard — vanilla JS (ES module)
+// ============================================================
+
+// ---------- formatters & helpers ----------
+const pad = (n) => String(n).padStart(2, "0");
+
 const fmt = (sec) => {
   sec = Math.max(0, Math.round(sec));
   const h = Math.floor(sec / 3600);
@@ -7,24 +14,22 @@ const fmt = (sec) => {
   if (m) return `${m}m ${s}s`;
   return `${s}s`;
 };
+const fmtShort = (sec) => {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h) return `${h}h ${m}m`;
+  return `${m}m`;
+};
+const fmtHm = (ts) => {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const dayStr = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 const escapeHtml = (s) =>
   String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-
-const state = {
-  period: "day",
-  anchor: null,
-  range: { start: null, end: null }, // YYYY-MM-DD, inclusive
-  labels: [],
-  window: { start: 0, end: 0, label: "" },
-  pickerTarget: null,
-  rowTarget: null,
-};
-
-const dayStr = (d) => {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
-};
 
 function parseRangeAnchor(s) {
   const [a, b] = String(s || "").split("..");
@@ -38,75 +43,19 @@ async function api(method, path, body) {
   return r.json();
 }
 
-function labelChip(label) {
-  if (!label) return "";
-  return `<span class="chip-label" style="background:${label.color}">${escapeHtml(label.name)}</span>`;
+function fmtDelta(curr, base) {
+  if (!base || !isFinite(base) || base <= 0) return null;
+  const d = (curr - base) / base;
+  return d;
 }
-
-function fmtHm(ts) {
-  if (!ts) return "";
-  const d = new Date(ts * 1000);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-function whenLabel(it) {
-  // Show the active time range on the day view; elide on longer windows.
-  if (state.period !== "day") return "";
-  const a = fmtHm(it.first_seen), b = fmtHm(it.last_seen);
-  if (!a && !b) return "";
-  if (a === b || !a) return b;
-  if (!b) return a;
-  return `${a}–${b}`;
-}
-
-function renderBars(el, items, nameKey, kindKey, clickable) {
-  el.innerHTML = "";
-  if (!items.length) {
-    el.innerHTML = '<li class="nonclick" style="color:var(--muted)">No data yet.</li>';
-    return;
-  }
-  const max = items[0].seconds || 1;
-  for (const it of items) {
-    const pct = Math.max(2, (it.seconds / max) * 100);
-    const kind = kindKey ? it[kindKey] : "";
-    const li = document.createElement("li");
-    if (kind) li.classList.add(kind);
-    if (!clickable) li.classList.add("nonclick");
-    const name = it[nameKey] || "(unknown)";
-    const kindChip = kind ? `<span class="kind">${kind}</span>` : "";
-    const label = it.assigned || null;
-    const more = clickable ? `<button class="more" title="Actions">⋯</button>` : "";
-    const when = whenLabel(it);
-    const whenSpan = when ? `<span class="when" title="First – last activity in this period">${when}</span>` : "";
-    li.innerHTML = `
-      <div class="row">
-        ${kindChip}
-        <span class="name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
-        ${labelChip(label)}
-        ${whenSpan}
-        <span class="time">${fmt(it.seconds)}</span>
-        ${more}
-      </div>
-      <div class="track"><div class="fill" style="width:${pct}%"></div></div>`;
-    if (clickable) {
-      const tt = kind === "web" ? "domain" : kind === "app" ? "app" : (nameKey === "domain" ? "domain" : "app");
-      li.addEventListener("click", (e) => {
-        if (e.target.closest(".more")) return;
-        openPicker(e.currentTarget, tt, name, label ? label.id : null);
-      });
-      li.querySelector(".more").addEventListener("click", (e) => {
-        e.stopPropagation();
-        openRowMenu(e.currentTarget, tt, name);
-      });
-    }
-    el.appendChild(li);
-  }
+function deltaLabel(d) {
+  if (d === null || d === undefined || !isFinite(d)) return { cls: "flat", text: "" };
+  const pct = Math.round(d * 100);
+  if (pct === 0) return { cls: "flat", text: "0%" };
+  return { cls: pct > 0 ? "up" : "down", text: `${pct > 0 ? "+" : ""}${pct}%` };
 }
 
 // Classify an activity item for the "Where time went" grouped view.
-// Known productive/unproductive label names win; anything else with a rule
-// → neutral; no rule → unlabeled.
 const PRODUCTIVE_LABELS = new Set(["verimli", "productive"]);
 const UNPRODUCTIVE_LABELS = new Set(["verimsiz", "unproductive"]);
 
@@ -119,125 +68,315 @@ function categoryOf(item) {
 }
 
 const GROUP_META = [
-  { cat: "productive",   title: "Productive apps" },
-  { cat: "unproductive", title: "Unproductive apps" },
-  { cat: "neutral",      title: "Neutral apps" },
+  { cat: "productive",   title: "Productive" },
+  { cat: "unproductive", title: "Unproductive" },
+  { cat: "neutral",      title: "Neutral" },
   { cat: "unlabeled",    title: "Unlabeled" },
 ];
 
-function renderGrouped(items) {
-  const el = document.getElementById("grouped");
-  el.innerHTML = "";
-  const minSec = (parseFloat(document.getElementById("min-dur").value) || 0) * 60;
-  const filtered = items.filter((it) => (it.seconds || 0) >= minSec);
-  if (!filtered.length) {
-    el.innerHTML = `<div class="group-empty">No activity over ${minSec/60}m. Lower the filter to see more.</div>`;
-    return;
+// ---------- state ----------
+const state = {
+  period: "day",
+  anchor: null,
+  range: { start: null, end: null },
+  labels: [],
+  window: { start: 0, end: 0, label: "" },
+  pickerTarget: null,
+  rowTarget: null,
+  sort: "duration",
+  categoryFilter: null,        // label_id or "unlabeled" or null
+  comparisons: null,           // { sparklines: {active:[],productive:[]...}, avgs: {...}, periodAvg: {...} }
+  lastData: null,
+  othersExpanded: {},          // per-category expansion state
+  peakTime: null,              // ts of peak productive bucket (for ring glow)
+};
+
+// ============================================================
+// Tabs — sliding pill
+// ============================================================
+function movePill() {
+  const nav = document.querySelector(".tabs");
+  const pill = nav.querySelector(".tabs-pill");
+  const active = nav.querySelector("button.active");
+  if (!active) return;
+  const navRect = nav.getBoundingClientRect();
+  const btnRect = active.getBoundingClientRect();
+  pill.style.width = `${btnRect.width}px`;
+  pill.style.transform = `translateX(${btnRect.left - navRect.left - 4}px)`;
+}
+window.addEventListener("resize", movePill);
+
+function setActiveTab(period) {
+  for (const b of document.querySelectorAll(".tabs button")) {
+    const on = b.dataset.period === period;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
   }
-  const buckets = { productive: [], unproductive: [], neutral: [], unlabeled: [] };
-  for (const it of filtered) buckets[categoryOf(it)].push(it);
+  movePill();
+}
 
-  for (const { cat, title } of GROUP_META) {
-    const rows = buckets[cat];
-    if (!rows.length) continue;
-    rows.sort((a, b) => (b.seconds || 0) - (a.seconds || 0));
-    const total = rows.reduce((s, x) => s + (x.seconds || 0), 0);
+// ============================================================
+// Hero: radial ring + stat grid
+// ============================================================
+function renderHero(data, comparisons) {
+  const stats = data.stats || {};
+  const totals = data.totals || {};
+  const productive = stats.productive_seconds || 0;
+  const unproductive = stats.unproductive_seconds || 0;
+  const denom = productive + unproductive;
+  const score = denom > 0 ? Math.round((productive / denom) * 100) : null;
 
-    const group = document.createElement("div");
-    group.className = "group";
-    const head = document.createElement("div");
-    head.className = `group-head ${cat}`;
-    head.innerHTML = `<span>${title} · ${fmt(total)}</span><span class="count">${rows.length}</span>`;
-    group.appendChild(head);
+  // ring
+  const circumference = 2 * Math.PI * 52; // ≈ 326.73
+  const ringFill = document.getElementById("ring-fill");
+  const ringOff = score === null
+    ? circumference
+    : circumference * (1 - score / 100);
+  ringFill.style.strokeDashoffset = ringOff.toFixed(1);
 
-    const grid = document.createElement("div");
-    grid.className = "group-grid";
-    for (const it of rows) {
-      const div = document.createElement("div");
-      div.className = "item";
-      const tt = it.kind === "web" ? "domain" : "app";
-      const when = whenLabel(it);
-      const whenSpan = when ? `<span class="when">${when}</span>` : "";
-      div.innerHTML = `
-        <span class="dot ${it.kind}"></span>
-        <span class="item-name" title="${escapeHtml(it.label)}">${escapeHtml(it.label)}</span>
-        ${whenSpan}
-        <span class="item-time">${fmt(it.seconds)}</span>
-        <button class="more" title="Actions">⋯</button>`;
-      div.addEventListener("click", (e) => {
-        if (e.target.closest(".more")) return;
-        openPicker(e.currentTarget, tt, it.label, it.assigned ? it.assigned.id : null);
-      });
-      div.querySelector(".more").addEventListener("click", (e) => {
-        e.stopPropagation();
-        openRowMenu(e.currentTarget, tt, it.label);
-      });
-      grid.appendChild(div);
+  const scoreEl = document.getElementById("score-value");
+  scoreEl.textContent = score === null ? "—" : String(score);
+
+  // narrative + badge
+  const badge = document.getElementById("score-badge");
+  const narrative = document.getElementById("score-narrative");
+  if (score === null) {
+    badge.className = "badge badge-muted";
+    badge.textContent = "no tracked time";
+    narrative.innerHTML = `Log some time and this panel will summarise your day.`;
+  } else {
+    const avgScore = comparisons?.avgs?.score;
+    if (avgScore !== undefined && avgScore !== null) {
+      const diff = score - avgScore;
+      const cls = diff > 1 ? "badge-up" : diff < -1 ? "badge-down" : "badge-muted";
+      badge.className = `badge ${cls}`;
+      badge.textContent =
+        diff > 1 ? `↑ ${Math.abs(diff)} pts` :
+        diff < -1 ? `↓ ${Math.abs(diff)} pts` :
+        `≈ trend`;
+      const word = diff > 1 ? `<span class="up">above</span>` :
+                   diff < -1 ? `<span class="down">below</span>` :
+                               `on track with`;
+      narrative.innerHTML =
+        `<strong>${score}%</strong> effectiveness — ${word} your ` +
+        `${comparisons.avgs.windowLabel} average of <strong>${Math.round(avgScore)}%</strong>.`;
+    } else {
+      badge.className = "badge badge-muted";
+      badge.textContent = `${score}%`;
+      narrative.innerHTML =
+        `<strong>${score}%</strong> effectiveness. ` +
+        `Productive time out of productive + unproductive.`;
     }
-    group.appendChild(grid);
-    el.appendChild(group);
+  }
+
+  // facts
+  document.getElementById("score-productive").textContent = fmt(productive);
+  document.getElementById("score-unproductive").textContent = fmt(unproductive);
+
+  const peak = stats.peak;
+  if (peak && peak.productive > 0) {
+    const pd = new Date(peak.t * 1000);
+    const bSec = peak.bucket_s || 3600;
+    const endD = new Date((peak.t + bSec) * 1000);
+    const peakLabel = bSec >= 86400
+      ? pd.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
+      : `${pad(pd.getHours())}:${pad(pd.getMinutes())}–${pad(endD.getHours())}:${pad(endD.getMinutes())}`;
+    document.getElementById("score-peak").textContent = peakLabel;
+    state.peakTime = peak.t;
+  } else {
+    document.getElementById("score-peak").textContent = "—";
+    state.peakTime = null;
+  }
+
+  // stat tiles
+  const tileValues = {
+    active:       totals.active_seconds || 0,
+    productive:   productive,
+    unproductive: unproductive,
+    idle:         totals.idle_seconds || 0,
+  };
+  document.getElementById("stat-active").textContent       = fmtShort(tileValues.active);
+  document.getElementById("stat-productive").textContent   = fmtShort(tileValues.productive);
+  document.getElementById("stat-unproductive").textContent = fmtShort(tileValues.unproductive);
+  document.getElementById("stat-idle").textContent         = fmtShort(tileValues.idle);
+
+  // sparklines + deltas
+  for (const tile of document.querySelectorAll(".stat-tile")) {
+    const k = tile.dataset.k;
+    const series = comparisons?.sparklines?.[k];
+    const svg = tile.querySelector("svg.spark");
+    const trendEl = tile.querySelector(".trend");
+    if (series && series.length >= 2) {
+      drawSpark(svg, series);
+      const avg = comparisons.avgs[k];
+      const curr = tileValues[k];
+      const d = fmtDelta(curr, avg);
+      const lab = deltaLabel(d);
+      trendEl.className = `trend ${lab.cls}`;
+      trendEl.textContent = lab.text;
+    } else {
+      svg.innerHTML = "";
+      trendEl.className = "trend flat";
+      trendEl.textContent = "";
+    }
   }
 }
 
-function renderTimeline(timeline) {
+function drawSpark(svg, series) {
+  svg.innerHTML = "";
+  const W = 100, H = 24, PAD = 2;
+  const max = Math.max(1, ...series);
+  const step = (W - PAD * 2) / Math.max(1, series.length - 1);
+  const pts = series.map((v, i) => {
+    const x = PAD + i * step;
+    const y = H - PAD - (v / max) * (H - PAD * 2);
+    return [x, y];
+  });
+  const d = pts.map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ");
+  const fillD = d + ` L ${(W - PAD).toFixed(1)},${(H - PAD).toFixed(1)} L ${PAD.toFixed(1)},${(H - PAD).toFixed(1)} Z`;
+
+  const ns = "http://www.w3.org/2000/svg";
+  const fill = document.createElementNS(ns, "path");
+  fill.setAttribute("d", fillD);
+  fill.setAttribute("fill", "currentColor");
+  fill.setAttribute("opacity", "0.14");
+  svg.appendChild(fill);
+
+  const line = document.createElementNS(ns, "path");
+  line.setAttribute("d", d);
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "currentColor");
+  line.setAttribute("stroke-width", "1.4");
+  line.setAttribute("stroke-linejoin", "round");
+  line.setAttribute("stroke-linecap", "round");
+  line.setAttribute("opacity", "0.9");
+  svg.appendChild(line);
+
+  // last-point dot
+  const last = pts[pts.length - 1];
+  const dot = document.createElementNS(ns, "circle");
+  dot.setAttribute("cx", last[0].toFixed(1));
+  dot.setAttribute("cy", last[1].toFixed(1));
+  dot.setAttribute("r", "1.9");
+  dot.setAttribute("fill", "currentColor");
+  svg.appendChild(dot);
+}
+
+// ============================================================
+// Timeline
+// ============================================================
+function renderTimeline(timeline, windowInfo, isTodayView) {
   const el = document.getElementById("timeline");
   const axisEl = document.getElementById("timeline-axis");
+  const overlayEl = document.getElementById("timeline-overlay");
   const hintEl = document.getElementById("timeline-hint");
   el.innerHTML = "";
   axisEl.innerHTML = "";
+  overlayEl.innerHTML = "";
+  el.classList.remove("animate");
+
   if (!timeline || !timeline.buckets || !timeline.buckets.length) {
-    el.innerHTML = '<div style="color:var(--muted); padding: 30px; text-align:center; flex:1;">No data yet.</div>';
+    el.innerHTML = `<div style="color:var(--muted); padding: 30px; text-align:center; flex:1;">No data yet.</div>`;
     return;
   }
   const bucketS = timeline.bucket_s;
-  const isHourly = bucketS <= 3600;
+  const isMinute = bucketS < 3600;
+  const isHourly = bucketS === 3600;
   const isMultiHour = bucketS > 3600 && bucketS < 86400;
   const isDaily = bucketS >= 86400;
-  hintEl.textContent = isHourly
-    ? "Each column is one hour of the day. Hover for details."
-    : isMultiHour
-      ? `Each column is ${Math.round(bucketS / 3600)} hours. Hover for details.`
-      : "Each column is one day. Hover for details.";
+  el.classList.toggle("dense", isMinute);
+  hintEl.textContent = isMinute
+    ? `Each column is ${Math.round(bucketS / 60)} minutes. Hover for details.`
+    : isHourly
+      ? "Each column is one hour. Hover for details."
+      : isMultiHour
+        ? `Each column is ${Math.round(bucketS / 3600)} hours.`
+        : "Each column is one day.";
 
-  // Scale height to the bucket's capacity (bucketS) so partial hours show partial bars.
-  for (const b of timeline.buckets) {
+  // find peak productive bucket
+  let peakIdx = -1, peakVal = 0;
+  timeline.buckets.forEach((b, i) => {
+    if (b.productive > peakVal) { peakVal = b.productive; peakIdx = i; }
+  });
+  const avgProductive = timeline.buckets.reduce((s, b) => s + b.productive, 0) / timeline.buckets.length;
+
+  const frag = document.createDocumentFragment();
+  timeline.buckets.forEach((b, i) => {
     const total = b.productive + b.unproductive + b.neutral + b.unlabeled + b.idle;
     const fill = Math.min(1, total / bucketS);
     const fillPct = fill * 100;
     const col = document.createElement("div");
     col.className = "bucket";
+    if (total <= 0) col.classList.add("empty");
+    if (i === peakIdx && peakVal > 0) col.classList.add("peak");
+
     const seg = (cls, sec) => {
       if (sec <= 0) return "";
       const pct = (sec / Math.max(total, 1)) * fillPct;
       return `<div class="seg ${cls}" style="height:${pct}%"></div>`;
     };
-    // Order bottom-up (column-reverse flex): productive at base, then neutral/unlabeled, idle, unproductive on top.
     const body =
       seg("productive",   b.productive) +
       seg("neutral",      b.neutral) +
       seg("unlabeled",    b.unlabeled) +
       seg("unproductive", b.unproductive) +
       seg("idle",         b.idle);
+
     const when = new Date(b.t * 1000);
-    const pad = (n) => String(n).padStart(2, "0");
+    const whenEnd = new Date((b.t + bucketS) * 1000);
     const tipHead = isDaily
       ? when.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
-      : isMultiHour
-        ? `${pad(when.getHours())}:00 – ${pad((when.getHours() + Math.round(bucketS / 3600)) % 24)}:00`
-        : `${pad(when.getHours())}:00 – ${pad((when.getHours() + 1) % 24)}:00`;
-    const tipLine = (label, sec) => sec > 0 ? `\n${label}: ${fmt(sec)}` : "";
-    const tipText =
-      tipHead +
-      tipLine("Productive",   b.productive) +
-      tipLine("Unproductive", b.unproductive) +
-      tipLine("Neutral",      b.neutral) +
-      tipLine("Unlabeled",    b.unlabeled) +
-      tipLine("Idle",         b.idle);
-    col.innerHTML = body + `<div class="tip">${escapeHtml(tipText).replace(/\n/g, "<br>")}</div>`;
-    el.appendChild(col);
+      : isMinute
+        ? `${pad(when.getHours())}:${pad(when.getMinutes())} – ${pad(whenEnd.getHours())}:${pad(whenEnd.getMinutes())}`
+        : isMultiHour
+          ? `${pad(when.getHours())}:00 – ${pad((when.getHours() + Math.round(bucketS / 3600)) % 24)}:00`
+          : `${pad(when.getHours())}:00 – ${pad((when.getHours() + 1) % 24)}:00`;
+    const row = (d, v, cls) => v > 0
+      ? `<div class="tl-row"><span class="d"><i class="sw ${cls}" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--c-${cls});margin-right:6px;vertical-align:middle"></i>${d}</span><span class="v">${fmt(v)}</span></div>`
+      : "";
+    const tip = `
+      <div class="tl-tip">
+        <div class="tl-title">${escapeHtml(tipHead)}</div>
+        ${row("Productive",   b.productive,   "productive")}
+        ${row("Unproductive", b.unproductive, "unproductive")}
+        ${row("Neutral",      b.neutral,      "neutral")}
+        ${row("Unlabeled",    b.unlabeled,    "unlabeled")}
+        ${row("Idle",         b.idle,         "idle")}
+        <div class="tl-foot">${Math.round(fill * 100)}% of ${isDaily ? "day" : "hour"} tracked</div>
+      </div>`;
+    col.innerHTML = body + tip;
+    frag.appendChild(col);
+  });
+  el.appendChild(frag);
+  // trigger entrance animation
+  requestAnimationFrame(() => el.classList.add("animate"));
+
+  // average productive reference line (skip when bar is super-short and noisy)
+  if ((isHourly || isMinute) && avgProductive > 0) {
+    const yPct = (avgProductive / bucketS) * 100; // height from bottom
+    if (yPct >= 4 && yPct <= 96) {
+      const line = document.createElement("div");
+      line.className = "avg-line";
+      line.style.bottom = `${yPct}%`;
+      overlayEl.appendChild(line);
+    }
   }
 
-  // Axis: show ~6-8 evenly-spaced ticks.
+  // "now" indicator
+  if (isTodayView) {
+    const nowTs = Date.now() / 1000;
+    if (nowTs >= windowInfo.start && nowTs <= windowInfo.end) {
+      const frac = (nowTs - windowInfo.start) / (windowInfo.end - windowInfo.start);
+      if (frac >= 0 && frac <= 1) {
+        const line = document.createElement("div");
+        line.className = "now-line";
+        line.style.left = `calc(${(frac * 100).toFixed(2)}% - 1px)`;
+        overlayEl.appendChild(line);
+      }
+    }
+  }
+
+  // axis
   const n = timeline.buckets.length;
   const target = Math.min(8, n);
   const step = Math.max(1, Math.round(n / target));
@@ -245,7 +384,6 @@ function renderTimeline(timeline) {
     const span = document.createElement("span");
     if (i % step === 0 || i === n - 1) {
       const when = new Date(timeline.buckets[i].t * 1000);
-      const pad = (nn) => String(nn).padStart(2, "0");
       span.textContent = isDaily
         ? when.toLocaleDateString(undefined, { month: "numeric", day: "numeric" })
         : `${pad(when.getHours())}`;
@@ -254,30 +392,450 @@ function renderTimeline(timeline) {
   }
 }
 
-function renderLabelBars(el, items) {
-  el.innerHTML = "";
-  if (!items.length) {
-    el.innerHTML = '<li class="nonclick" style="color:var(--muted)">No data yet.</li>';
+// ============================================================
+// By category — stacked bar + table
+// ============================================================
+function renderCategory(byLabel, comparisons) {
+  const stackedEl = document.getElementById("stacked-bar");
+  const tableEl   = document.getElementById("category-table");
+  stackedEl.innerHTML = "";
+  tableEl.innerHTML = "";
+  const total = byLabel.reduce((s, x) => s + (x.seconds || 0), 0);
+  if (!total) {
+    stackedEl.classList.add("empty");
+    tableEl.innerHTML = `<div class="group-empty">No data yet.</div>`;
     return;
   }
-  const max = items[0].seconds || 1;
-  for (const it of items) {
-    const pct = Math.max(2, (it.seconds / max) * 100);
-    const li = document.createElement("li");
-    li.classList.add("nonclick");
-    const color = it.color || "#6b7280";
-    li.innerHTML = `
-      <div class="row">
-        <span class="chip-label" style="background:${color}">${escapeHtml(it.name)}</span>
-        <span class="name"></span>
-        <span class="time">${fmt(it.seconds)}</span>
-      </div>
-      <div class="track"><div class="fill" style="width:${pct}%; background:${color}"></div></div>`;
-    el.appendChild(li);
+  stackedEl.classList.remove("empty");
+
+  // build stacked bar
+  const fragBar = document.createDocumentFragment();
+  for (const it of byLabel) {
+    const pct = ((it.seconds || 0) / total) * 100;
+    if (pct <= 0) continue;
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    const key = it.label_id === null || it.label_id === undefined ? "unlabeled" : String(it.label_id);
+    seg.dataset.key = key;
+    seg.style.flex = `${pct} 0 0`;
+    seg.style.background = it.color || "var(--c-unlabeled)";
+    seg.title = `${it.name} · ${fmt(it.seconds)} (${pct.toFixed(1)}%)`;
+    if (state.categoryFilter === key) seg.classList.add("selected");
+    seg.addEventListener("click", () => toggleCategoryFilter(key));
+    fragBar.appendChild(seg);
+  }
+  stackedEl.appendChild(fragBar);
+
+  // build table
+  const fragTbl = document.createDocumentFragment();
+  for (const it of byLabel) {
+    const key = it.label_id === null || it.label_id === undefined ? "unlabeled" : String(it.label_id);
+    const pct = ((it.seconds || 0) / total) * 100;
+    const row = document.createElement("div");
+    row.className = "cat-row";
+    if (state.categoryFilter === key) row.classList.add("selected");
+    row.dataset.key = key;
+
+    // delta vs comparison avg (per-label)
+    let deltaHtml = "";
+    const avgForLabel = comparisons?.perLabelAvg?.[it.name?.toLowerCase()];
+    if (avgForLabel > 0) {
+      const d = fmtDelta(it.seconds || 0, avgForLabel);
+      const lab = deltaLabel(d);
+      if (lab.text) deltaHtml = `<span class="trend ${lab.cls}">${lab.text}</span>`;
+    }
+
+    row.innerHTML = `
+      <span class="dot" style="background:${it.color || "var(--c-unlabeled)"}"></span>
+      <span class="cat-name">${escapeHtml(it.name)}</span>
+      <span class="cat-time">${fmt(it.seconds || 0)}</span>
+      <span class="cat-pct">${pct.toFixed(1)}%</span>
+      <span class="cat-delta">${deltaHtml}</span>
+    `;
+    row.addEventListener("click", () => toggleCategoryFilter(key));
+    fragTbl.appendChild(row);
+  }
+  tableEl.appendChild(fragTbl);
+
+  document.getElementById("category-clear").classList.toggle("hidden", state.categoryFilter === null);
+  document.getElementById("category-hint").textContent =
+    state.categoryFilter
+      ? "Filtering rows below. Click again to clear."
+      : "Share of tracked time per label. Click a row to filter below.";
+}
+
+function toggleCategoryFilter(key) {
+  state.categoryFilter = state.categoryFilter === key ? null : key;
+  if (state.lastData) {
+    renderCategory(state.lastData.by_label || [], state.comparisons);
+    renderGrouped(state.lastData.activity || []);
   }
 }
 
-// ---------- label picker ----------
+// ============================================================
+// Where time went
+// ============================================================
+function faviconUrl(domain) {
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`;
+}
+
+function appInitial(name) {
+  return (name || "?").trim().charAt(0).toUpperCase() || "·";
+}
+
+function matchesFilter(item) {
+  if (state.categoryFilter === null) return true;
+  const cat = categoryOf(item);
+  if (state.categoryFilter === "unlabeled") return cat === "unlabeled";
+  // numeric label_id key
+  const id = item.assigned ? item.assigned.id : null;
+  if (id !== null && String(id) === state.categoryFilter) return true;
+  return false;
+}
+
+function renderGrouped(items) {
+  const el = document.getElementById("grouped");
+  el.innerHTML = "";
+  const minSec = (parseFloat(document.getElementById("min-dur").value) || 0) * 60;
+  const filtered = items.filter((it) => matchesFilter(it));
+
+  if (!filtered.length) {
+    el.innerHTML = `<div class="group-empty">No activity to show${state.categoryFilter ? " in this category" : ""}.</div>`;
+    return;
+  }
+
+  const buckets = { productive: [], unproductive: [], neutral: [], unlabeled: [] };
+  for (const it of filtered) buckets[categoryOf(it)].push(it);
+
+  const frag = document.createDocumentFragment();
+  for (const { cat, title } of GROUP_META) {
+    const rows = buckets[cat];
+    if (!rows.length) continue;
+
+    // sort
+    if (state.sort === "duration") {
+      rows.sort((a, b) => (b.seconds || 0) - (a.seconds || 0));
+    } else {
+      rows.sort((a, b) => (a.label || "").localeCompare(b.label || ""));
+    }
+
+    const visible = [];
+    const hidden = [];
+    for (const it of rows) {
+      if ((it.seconds || 0) >= minSec) visible.push(it);
+      else hidden.push(it);
+    }
+
+    const total = rows.reduce((s, x) => s + (x.seconds || 0), 0);
+    const maxSec = Math.max(1, ...rows.map((x) => x.seconds || 0));
+
+    const group = document.createElement("div");
+    group.className = "group";
+    const head = document.createElement("div");
+    head.className = "group-head";
+    head.innerHTML = `
+      <span class="pill ${cat}">${escapeHtml(title)}</span>
+      <span class="group-count">${rows.length} ${rows.length === 1 ? "item" : "items"}</span>
+      <span class="group-total">${fmt(total)}</span>
+    `;
+    group.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "group-list";
+    const expandKey = cat;
+    const isExpanded = !!state.othersExpanded[expandKey];
+    const showRows = isExpanded ? [...visible, ...hidden] : visible;
+
+    for (const it of showRows) {
+      list.appendChild(makeActivityRow(it, cat, maxSec, total));
+    }
+    if (!isExpanded && hidden.length) {
+      const hiddenTotal = hidden.reduce((s, x) => s + (x.seconds || 0), 0);
+      const more = document.createElement("div");
+      more.className = "wrow others";
+      more.innerHTML = `
+        <span class="icon app">+</span>
+        <span class="name">+ ${hidden.length} more under ${Math.round(minSec / 60)}m</span>
+        <span class="mini-bar"></span>
+        <span class="time">${fmt(hiddenTotal)}</span>
+        <span class="pct">show</span>
+        <span></span>
+      `;
+      more.addEventListener("click", () => {
+        state.othersExpanded[expandKey] = true;
+        renderGrouped(items);
+      });
+      list.appendChild(more);
+    } else if (isExpanded && hidden.length) {
+      const collapse = document.createElement("div");
+      collapse.className = "wrow others";
+      collapse.innerHTML = `
+        <span class="icon app">−</span>
+        <span class="name">Collapse small items</span>
+        <span class="mini-bar"></span>
+        <span class="time"></span>
+        <span class="pct">hide</span>
+        <span></span>
+      `;
+      collapse.addEventListener("click", () => {
+        state.othersExpanded[expandKey] = false;
+        renderGrouped(items);
+      });
+      list.appendChild(collapse);
+    }
+
+    group.appendChild(list);
+    frag.appendChild(group);
+  }
+  el.appendChild(frag);
+}
+
+function makeActivityRow(it, cat, maxSec, groupTotal) {
+  const div = document.createElement("div");
+  div.className = `wrow ${cat}`;
+  const pct = groupTotal > 0 ? ((it.seconds || 0) / groupTotal) * 100 : 0;
+  const barPct = Math.max(2, ((it.seconds || 0) / maxSec) * 100);
+
+  let iconHtml;
+  if (it.kind === "web") {
+    iconHtml = `<span class="icon"><img src="${faviconUrl(it.label)}" alt="" loading="lazy" onerror="this.remove()"/></span>`;
+  } else {
+    iconHtml = `<span class="icon app">${escapeHtml(appInitial(it.label))}</span>`;
+  }
+
+  const assigned = it.assigned
+    ? `<span class="sub">${escapeHtml(it.assigned.name)}</span>`
+    : "";
+
+  div.innerHTML = `
+    ${iconHtml}
+    <span class="name" title="${escapeHtml(it.label)}">${escapeHtml(it.label)}${assigned}</span>
+    <span class="mini-bar"><span class="fill" style="width:${barPct}%"></span></span>
+    <span class="time">${fmt(it.seconds)}</span>
+    <span class="pct">${pct.toFixed(0)}%</span>
+    <button class="more" title="Actions" aria-label="Actions">⋯</button>
+  `;
+  const tt = it.kind === "web" ? "domain" : "app";
+  div.addEventListener("click", (e) => {
+    if (e.target.closest(".more")) return;
+    openPicker(e.currentTarget, tt, it.label, it.assigned ? it.assigned.id : null);
+  });
+  div.querySelector(".more").addEventListener("click", (e) => {
+    e.stopPropagation();
+    openRowMenu(e.currentTarget, tt, it.label);
+  });
+  return div;
+}
+
+// ============================================================
+// Comparisons — fetch trailing window summary, build sparklines
+// ============================================================
+async function loadComparisons(windowInfo) {
+  // only day/week/month/year make sense for comparison
+  if (state.period === "range") { state.comparisons = null; return; }
+  try {
+    const DAY = 86400;
+    const spanS = Math.max(DAY, windowInfo.end - windowInfo.start);
+    const spanDays = Math.round(spanS / DAY);
+    const samples = 7;                 // 7 trailing comparable periods
+    const end = new Date(windowInfo.end * 1000 - 1000);
+    const start = new Date(end.getTime() - (samples * spanDays - 1) * DAY * 1000);
+    const qs = new URLSearchParams({
+      period: "range",
+      start: dayStr(start),
+      end: dayStr(end),
+    });
+    const data = await api("GET", "/api/summary?" + qs);
+    const buckets = data?.timeline?.buckets || [];
+    const bucketS = data?.timeline?.bucket_s || DAY;
+
+    // bucket into `samples` consecutive period-sized bins
+    const binSec = spanDays * DAY;
+    const bins = Array.from({ length: samples }, () => ({
+      active: 0, productive: 0, unproductive: 0, neutral: 0, unlabeled: 0, idle: 0,
+    }));
+    const winStart = start.getTime() / 1000;
+    for (const b of buckets) {
+      const idx = Math.floor((b.t - winStart) / binSec);
+      if (idx < 0 || idx >= samples) continue;
+      bins[idx].productive   += b.productive;
+      bins[idx].unproductive += b.unproductive;
+      bins[idx].neutral      += b.neutral;
+      bins[idx].unlabeled    += b.unlabeled;
+      bins[idx].idle         += b.idle;
+      bins[idx].active       += b.productive + b.unproductive + b.neutral + b.unlabeled;
+    }
+
+    const sparklines = {
+      active:       bins.map((b) => b.active),
+      productive:   bins.map((b) => b.productive),
+      unproductive: bins.map((b) => b.unproductive),
+      idle:         bins.map((b) => b.idle),
+    };
+    const avg = (arr) => arr.reduce((s, v) => s + v, 0) / Math.max(1, arr.length);
+    const avgs = {
+      active:       avg(sparklines.active),
+      productive:   avg(sparklines.productive),
+      unproductive: avg(sparklines.unproductive),
+      idle:         avg(sparklines.idle),
+    };
+    // effectiveness score per bin → average
+    const binScores = bins.map((b) => {
+      const d = b.productive + b.unproductive;
+      return d > 0 ? (b.productive / d) * 100 : null;
+    }).filter((v) => v !== null);
+    avgs.score = binScores.length ? binScores.reduce((s, v) => s + v, 0) / binScores.length : null;
+
+    // windowLabel for narrative
+    const windowLabel = ({
+      day:   "7-day",
+      week:  "7-week",
+      month: "7-month",
+      year:  "7-year",
+    }[state.period]) || "recent";
+    avgs.windowLabel = windowLabel;
+
+    // per-label averages — keyed by label name (lowercased)
+    const perLabelAvg = {};
+    // Build by dividing the by_label total by samples (rough per-period avg).
+    for (const lb of data.by_label || []) {
+      const nm = (lb.name || "").toLowerCase();
+      perLabelAvg[nm] = (lb.seconds || 0) / samples;
+    }
+
+    state.comparisons = { sparklines, avgs, perLabelAvg };
+  } catch (_) {
+    state.comparisons = null;
+  }
+}
+
+// ============================================================
+// Load
+// ============================================================
+async function load() {
+  const qs = new URLSearchParams();
+  qs.set("period", state.period);
+  if (state.period === "range") {
+    if (!state.range.start || !state.range.end) {
+      const today = new Date();
+      const weekAgo = new Date(Date.now() - 6 * 86400000);
+      state.range = { start: dayStr(weekAgo), end: dayStr(today) };
+    }
+    qs.set("start", state.range.start);
+    qs.set("end", state.range.end);
+    document.getElementById("range-start").value = state.range.start;
+    document.getElementById("range-end").value = state.range.end;
+  } else if (state.anchor) {
+    qs.set("anchor", state.anchor);
+  }
+
+  const data = await api("GET", "/api/summary?" + qs.toString());
+  state.lastData = data;
+  state.anchor = data.window.anchor;
+  state.window = { start: data.window.start, end: data.window.end, label: data.window.label };
+  document.getElementById("label-window").textContent = data.window.label;
+
+  // render primary content with whatever comparisons we currently have
+  renderHero(data, state.comparisons);
+  const nowTs = Date.now() / 1000;
+  const isTodayView = state.period === "day" && nowTs >= data.window.start && nowTs <= data.window.end;
+  renderTimeline(data.timeline, data.window, isTodayView);
+  renderCategory(data.by_label || [], state.comparisons);
+  renderGrouped(data.activity || []);
+
+  document.getElementById("prev").dataset.anchor = data.window.prev;
+  document.getElementById("next").dataset.anchor = data.window.next;
+
+  // async: load comparisons and re-render hero/category when ready
+  loadComparisons(data.window).then(() => {
+    if (!state.lastData) return;
+    renderHero(state.lastData, state.comparisons);
+    renderCategory(state.lastData.by_label || [], state.comparisons);
+  });
+}
+
+// ============================================================
+// Period & range navigation
+// ============================================================
+function setPeriod(p) {
+  state.period = p;
+  state.anchor = null;
+  setActiveTab(p);
+  document.getElementById("range-pickers").classList.toggle("hidden", p !== "range");
+  load();
+}
+document.querySelectorAll(".tabs button").forEach((b) =>
+  b.addEventListener("click", () => setPeriod(b.dataset.period)),
+);
+
+function applyNavAnchor(anchor) {
+  if (state.period === "range") {
+    const r = parseRangeAnchor(anchor);
+    if (r) state.range = r;
+  } else {
+    state.anchor = anchor;
+  }
+  load();
+}
+document.getElementById("prev").addEventListener("click", (e) => applyNavAnchor(e.currentTarget.dataset.anchor));
+document.getElementById("next").addEventListener("click", (e) => applyNavAnchor(e.currentTarget.dataset.anchor));
+document.getElementById("today").addEventListener("click", () => {
+  state.anchor = null;
+  if (state.period === "range") {
+    const today = new Date();
+    const weekAgo = new Date(Date.now() - 6 * 86400000);
+    state.range = { start: dayStr(weekAgo), end: dayStr(today) };
+  }
+  load();
+});
+
+document.getElementById("range-apply").addEventListener("click", () => {
+  const s = document.getElementById("range-start").value;
+  const e = document.getElementById("range-end").value;
+  if (!s || !e) return alert("Pick both start and end dates.");
+  state.range = { start: s, end: e };
+  state.period = "range";
+  setActiveTab("range");
+  document.getElementById("range-pickers").classList.remove("hidden");
+  load();
+});
+document.querySelectorAll(".range-presets button").forEach((b) =>
+  b.addEventListener("click", () => {
+    const n = parseInt(b.dataset.preset, 10);
+    const today = new Date();
+    const start = new Date(Date.now() - (n - 1) * 86400000);
+    state.range = { start: dayStr(start), end: dayStr(today) };
+    state.period = "range";
+    setActiveTab("range");
+    document.getElementById("range-pickers").classList.remove("hidden");
+    load();
+  })
+);
+
+// ============================================================
+// Sort toggle
+// ============================================================
+document.querySelectorAll(".seg-small button[data-sort]").forEach((b) => {
+  b.addEventListener("click", () => {
+    for (const s of document.querySelectorAll(".seg-small button[data-sort]")) {
+      s.classList.toggle("active", s === b);
+    }
+    state.sort = b.dataset.sort;
+    if (state.lastData) renderGrouped(state.lastData.activity || []);
+  });
+});
+
+document.getElementById("category-clear").addEventListener("click", () => {
+  state.categoryFilter = null;
+  if (state.lastData) {
+    renderCategory(state.lastData.by_label || [], state.comparisons);
+    renderGrouped(state.lastData.activity || []);
+  }
+});
+
+// ============================================================
+// Label picker
+// ============================================================
 const picker = document.getElementById("picker");
 const pickerList = document.getElementById("picker-list");
 
@@ -295,11 +853,7 @@ function openPicker(anchorEl, target_type, target, currentLabelId) {
   positionPopover(picker, anchorEl);
   picker.classList.remove("hidden");
 }
-
-function closePicker() {
-  picker.classList.add("hidden");
-  state.pickerTarget = null;
-}
+function closePicker() { picker.classList.add("hidden"); state.pickerTarget = null; }
 
 async function assign(label_id) {
   if (!state.pickerTarget) return;
@@ -308,10 +862,11 @@ async function assign(label_id) {
   closePicker();
   load();
 }
-
 document.getElementById("picker-clear").addEventListener("click", () => assign(null));
 
-// ---------- row action menu (delete) ----------
+// ============================================================
+// Row menu
+// ============================================================
 const rowmenu = document.getElementById("rowmenu");
 const rowmenuTarget = document.getElementById("rowmenu-target");
 
@@ -322,11 +877,7 @@ function openRowMenu(anchorEl, target_type, target) {
   positionPopover(rowmenu, anchorEl);
   rowmenu.classList.remove("hidden");
 }
-
-function closeRowMenu() {
-  rowmenu.classList.add("hidden");
-  state.rowTarget = null;
-}
+function closeRowMenu() { rowmenu.classList.add("hidden"); state.rowTarget = null; }
 
 async function deleteRow(scoped) {
   if (!state.rowTarget) return;
@@ -337,37 +888,97 @@ async function deleteRow(scoped) {
     : `Delete ALL time for "${target}" across ALL history? This cannot be undone.`;
   if (!confirm(msg)) return;
   const body = { [target_type === "app" ? "app" : "domain"]: target };
-  if (scoped) {
-    body.start_ts = state.window.start;
-    body.end_ts = state.window.end;
-  }
-  const r = await api("DELETE", "/api/events", body);
+  if (scoped) { body.start_ts = state.window.start; body.end_ts = state.window.end; }
+  await api("DELETE", "/api/events", body);
   closeRowMenu();
   load();
 }
-
 document.getElementById("rowmenu-del-period").addEventListener("click", () => deleteRow(true));
 document.getElementById("rowmenu-del-all").addEventListener("click", () => deleteRow(false));
 
-// ---------- shared popover helpers ----------
-function positionPopover(el, anchorEl) {
-  const rect = anchorEl.getBoundingClientRect();
-  el.style.top = `${window.scrollY + rect.bottom + 4}px`;
-  el.style.left = `${Math.min(window.innerWidth - 220, rect.left)}px`;
+// ============================================================
+// Overflow menu + help menu
+// ============================================================
+const overflow = document.getElementById("overflow-menu");
+const helpMenu = document.getElementById("help-menu");
+
+function openOverflow(anchorEl) {
+  closeAllPopovers();
+  positionPopover(overflow, anchorEl, { align: "right" });
+  overflow.classList.remove("hidden");
 }
+function openHelp(anchorEl) {
+  closeAllPopovers();
+  positionPopover(helpMenu, anchorEl, { align: "right" });
+  helpMenu.classList.remove("hidden");
+}
+
+document.getElementById("head-overflow").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (overflow.classList.contains("hidden")) openOverflow(e.currentTarget);
+  else overflow.classList.add("hidden");
+});
+document.getElementById("help-keys").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (helpMenu.classList.contains("hidden")) openHelp(e.currentTarget);
+  else helpMenu.classList.add("hidden");
+});
+
+// Overflow items — route to existing modals/handlers
+document.getElementById("ov-labels").addEventListener("click", async () => {
+  overflow.classList.add("hidden");
+  await refreshLabels();
+  renderLabelList();
+  modal.classList.remove("hidden");
+});
+document.getElementById("ov-settings").addEventListener("click", () => {
+  overflow.classList.add("hidden");
+  openSettings();
+});
+document.getElementById("ov-restart").addEventListener("click", () => {
+  overflow.classList.add("hidden");
+  restartDaemon();
+});
+
+// ============================================================
+// Popover helpers
+// ============================================================
+function positionPopover(el, anchorEl, opts = {}) {
+  el.style.visibility = "hidden";
+  el.classList.remove("hidden");
+  const w = el.offsetWidth || 220;
+  el.classList.add("hidden");
+  el.style.visibility = "";
+
+  const rect = anchorEl.getBoundingClientRect();
+  el.style.top = `${window.scrollY + rect.bottom + 6}px`;
+  let left;
+  if (opts.align === "right") {
+    left = rect.right - w;
+  } else {
+    left = rect.left;
+  }
+  left = Math.max(8, Math.min(window.innerWidth - w - 8, left));
+  el.style.left = `${left}px`;
+}
+
 function closeAllPopovers() {
   closePicker();
   closeRowMenu();
+  overflow.classList.add("hidden");
+  helpMenu.classList.add("hidden");
 }
 document.addEventListener("click", (e) => {
-  const inPicker = picker.contains(e.target);
-  const inRowmenu = rowmenu.contains(e.target);
-  const onBar = e.target.closest(".bars li");
-  if (!inPicker && !inRowmenu && !onBar) closeAllPopovers();
+  if (picker.contains(e.target) || rowmenu.contains(e.target) ||
+      overflow.contains(e.target) || helpMenu.contains(e.target)) return;
+  if (e.target.closest(".wrow")) return;
+  closeAllPopovers();
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAllPopovers(); });
 
-// ---------- labels modal ----------
+// ============================================================
+// Labels modal
+// ============================================================
 const modal = document.getElementById("modal");
 const labelList = document.getElementById("label-list");
 
@@ -379,7 +990,7 @@ function renderLabelList() {
       <span class="swatch" style="background:${lb.color}"></span>
       <input type="text" value="${escapeHtml(lb.name)}" data-id="${lb.id}" />
       <input type="color" value="${lb.color}" data-id="${lb.id}" />
-      <button title="Delete" data-id="${lb.id}">🗑</button>
+      <button title="Delete" data-id="${lb.id}">×</button>
     `;
     const [nameInput, colorInput, delBtn] = li.querySelectorAll("input[type=text], input[type=color], button");
     const commit = async () => {
@@ -398,11 +1009,6 @@ function renderLabelList() {
   }
 }
 
-document.getElementById("manage-labels").addEventListener("click", async () => {
-  await refreshLabels();
-  renderLabelList();
-  modal.classList.remove("hidden");
-});
 document.getElementById("modal-close").addEventListener("click", () => modal.classList.add("hidden"));
 modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
 
@@ -423,7 +1029,9 @@ async function refreshLabels() {
   state.labels = r.labels || [];
 }
 
-// ---------- add time modal ----------
+// ============================================================
+// Add time modal
+// ============================================================
 const addModal = document.getElementById("add-modal");
 const addApp = document.getElementById("add-app");
 const addDomain = document.getElementById("add-domain");
@@ -436,9 +1044,7 @@ function openAddTime() {
   addDomain.value = "";
   addHours.value = "0";
   addMins.value = "30";
-  // datetime-local wants YYYY-MM-DDTHH:MM local; default = now
   const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
   addWhen.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   addModal.classList.remove("hidden");
   addApp.focus();
@@ -458,16 +1064,17 @@ document.getElementById("add-form").addEventListener("submit", async (e) => {
   const seconds = hours * 3600 + mins * 60;
   if (!app && !domain) return alert("App or website required.");
   if (seconds <= 0) return alert("Duration must be > 0.");
-  // datetime-local is in local timezone; parsing as Date handles that
   const when = addWhen.value ? new Date(addWhen.value) : new Date();
-  const when_ts = (when.getTime() / 1000) - seconds; // span ENDS at that time
+  const when_ts = (when.getTime() / 1000) - seconds;
   const r = await api("POST", "/api/manual", { app, domain, seconds, when_ts });
   if (r.error) return alert("Error: " + r.error);
   addModal.classList.add("hidden");
   load();
 });
 
-// ---------- CSV import ----------
+// ============================================================
+// CSV import
+// ============================================================
 const importModal = document.getElementById("import-modal");
 const importFile = document.getElementById("import-file");
 const importFilename = document.getElementById("import-filename");
@@ -475,7 +1082,7 @@ const importAnchor = document.getElementById("import-anchor");
 const importLabel = document.getElementById("import-label");
 const importPreview = document.getElementById("import-preview");
 const importGo = document.getElementById("import-go");
-let importParsed = null; // {events: [...], totalSeconds, rowCount}
+let importParsed = null;
 
 function parseCsv(text) {
   const rows = [];
@@ -500,7 +1107,6 @@ function parseCsv(text) {
 }
 
 function parseFilenameDateClockify(name) {
-  // Clockify naming: ..._MM_DD_YYYY-MM_DD_YYYY.csv — return the END date
   const m = name.match(/(\d{2})_(\d{2})_(\d{4})(?!.*\d)/);
   if (!m) return null;
   const [_, mm, dd, yyyy] = m;
@@ -517,39 +1123,25 @@ function hmsToSeconds(s) {
 
 function detectFormat(header) {
   const h = header.map(s => s.trim().toLowerCase());
-  if (h.includes("date") && h.includes("productivity level") && h.includes("app/url name")) {
-    return "desktime";
-  }
-  if (h.includes("project") && (h.includes("time (decimal)") || h.includes("time (h)"))) {
-    return "clockify";
-  }
+  if (h.includes("date") && h.includes("productivity level") && h.includes("app/url name")) return "desktime";
+  if (h.includes("project") && (h.includes("time (decimal)") || h.includes("time (h)"))) return "clockify";
   return null;
 }
 
-// DeskTime's "Productivity level" → existing seeded Omrum labels.
 const DESKTIME_LABEL = { productive: "verimli", neutral: "genel", unproductive: "verimsiz" };
-
-// DeskTime lists generic browser process rows alongside per-URL rows. Importing
-// both would double-count browser time, so we keep the URL-level rows only.
 const DESKTIME_SKIP_NAMES = new Set([
   "google chrome", "google-chrome-stable", "msedge", "microsoft edge",
   "firefox", "firefox_firefox", "safari", "unknown app",
 ]);
 
 function classifyDeskTimeName(name) {
-  // Chrome-internal: chrome://newtab, chrome-extension://..., about:blank
   if (/^(chrome:|chrome-extension:|about:)/i.test(name)) return { app: "chrome", domain: null };
-  // File paths ("///home/…"): show under a "file" bucket
   if (name.startsWith("///") || name.startsWith("/")) return { app: "file", domain: null };
-  // Domain: first path-segment, must be all-lowercase dotted hostname.
-  // This correctly excludes "Org.gnome.Nautilus" / "Io.snapcraft.Store".
   const host = name.split(/[\/?#]/)[0];
   if (/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host)) {
     const normalized = host.startsWith("www.") ? host.slice(4) : host;
     return { app: "chrome", domain: normalized };
   }
-  // Match the live tracker, which lowercases every process name — keeps
-  // "Code" (DeskTime) and "code" (daemon) in one bucket.
   return { app: name.toLowerCase(), domain: null };
 }
 
@@ -587,13 +1179,11 @@ function parseDeskTime(rows) {
     prod: header.indexOf("productivity level"),
     time: header.indexOf("time"),
   };
-
   const byDate = new Map();
   const topTargets = {};
   const labelTotals = {};
   let total = 0;
   let skipped = 0;
-
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
     if (!r) continue;
@@ -606,21 +1196,15 @@ function parseDeskTime(rows) {
     const sec = hmsToSeconds(timeStr);
     if (sec <= 0) continue;
     if (DESKTIME_SKIP_NAMES.has(name.toLowerCase())) { skipped++; continue; }
-
     const { app, domain } = classifyDeskTimeName(name);
     const label = DESKTIME_LABEL[prod] || null;
-
     if (!byDate.has(date)) byDate.set(date, []);
     byDate.get(date).push({ app, domain, title: title || null, seconds: sec, label });
-
     total += sec;
     const key = domain || app;
     topTargets[key] = (topTargets[key] || 0) + sec;
     if (label) labelTotals[label] = (labelTotals[label] || 0) + sec;
   }
-
-  // Stack events per-day: each day's events run sequentially from 00:00 onward,
-  // so they don't overlap and show up on the correct calendar day.
   const events = [];
   for (const [date, dayEvents] of byDate) {
     const dayStart = new Date(date + "T00:00:00").getTime() / 1000;
@@ -633,10 +1217,8 @@ function parseDeskTime(rows) {
       });
     }
   }
-
   const dates = Array.from(byDate.keys()).sort();
   const dateRange = dates.length ? `${dates[0]} → ${dates[dates.length - 1]} (${dates.length} days)` : "";
-
   return {
     format: "desktime", events, totalSeconds: total, rowCount: events.length,
     topTargets, labelTotals, dateRange, skipped, usesRowDates: true,
@@ -665,7 +1247,6 @@ function buildPreview(parsed) {
       for (const [a, s] of sorted) lines.push(`  ${a.padEnd(24)} ${(s / 3600).toFixed(1)}h`);
     }
   } else {
-    // Clockify
     lines.push(`Detected: Clockify summary export`);
     lines.push(`${parsed.events.length} rows, ${totalH}h total`);
     const topApps = {};
@@ -680,14 +1261,11 @@ async function onImportFile(e) {
   const f = e.target.files[0];
   if (!f) return;
   importFilename.textContent = f.name;
-
   const text = await f.text();
   const rows = parseCsv(text);
   if (rows.length < 2) {
     importPreview.textContent = "Empty or invalid CSV.";
-    importGo.disabled = true;
-    importParsed = null;
-    return;
+    importGo.disabled = true; importParsed = null; return;
   }
   const format = detectFormat(rows[0]);
   if (!format) {
@@ -695,18 +1273,13 @@ async function onImportFile(e) {
       "Unrecognized CSV. Supported formats:\n" +
       "  • Clockify Summary (columns: Project, Description, Time (decimal))\n" +
       "  • DeskTime Export  (columns: Date, App/URL name, Productivity level, Time)";
-    importGo.disabled = true;
-    importParsed = null;
-    return;
+    importGo.disabled = true; importParsed = null; return;
   }
   importParsed = format === "desktime" ? parseDeskTime(rows) : parseClockify(rows);
-
-  // DeskTime has per-row dates and per-row labels; the anchor field is hidden
-  // and the label field becomes an optional override.
   const anchorWrap = document.getElementById("import-anchor-wrap");
   if (anchorWrap) anchorWrap.style.display = format === "desktime" ? "none" : "";
   if (format === "desktime") {
-    importLabel.value = ""; // default: use per-row productivity
+    importLabel.value = "";
     importLabel.placeholder = "blank = use DeskTime productivity per row";
   } else {
     importLabel.placeholder = "e.g. verimli (blank = none)";
@@ -714,7 +1287,6 @@ async function onImportFile(e) {
     const fromName = parseFilenameDateClockify(f.name);
     if (fromName) importAnchor.value = fromName;
   }
-
   importPreview.textContent = buildPreview(importParsed);
   importGo.disabled = importParsed.events.length === 0;
 }
@@ -726,12 +1298,11 @@ function openImport() {
   importPreview.textContent = "Select a file to see a preview.";
   importGo.disabled = true;
   const d = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
   importAnchor.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T23:59`;
   importLabel.value = "verimli";
   importLabel.placeholder = "e.g. verimli (blank = none)";
   const anchorWrap = document.getElementById("import-anchor-wrap");
-  if (anchorWrap) anchorWrap.style.display = ""; // reset; hidden later for DeskTime
+  if (anchorWrap) anchorWrap.style.display = "";
   importModal.classList.remove("hidden");
 }
 
@@ -744,14 +1315,9 @@ importFile.addEventListener("change", onImportFile);
 importGo.addEventListener("click", async () => {
   if (!importParsed) return;
   importGo.disabled = true;
-
   const overrideLabel = (importLabel.value || "").trim() || null;
-  let events;
-  let titleTag;
-
+  let events; let titleTag;
   if (importParsed.usesRowDates) {
-    // DeskTime: events already carry when_ts (per their own date) and a per-row
-    // `label` from Productivity. An override label, if provided, wins.
     events = importParsed.events.map(ev => ({
       app: ev.app, domain: ev.domain || null, title: ev.title || null,
       seconds: ev.seconds, when_ts: ev.when_ts,
@@ -759,7 +1325,6 @@ importGo.addEventListener("click", async () => {
     }));
     titleTag = "[desktime]";
   } else {
-    // Clockify: no per-row dates; stack events ending at the chosen anchor.
     const anchor = importAnchor.value ? new Date(importAnchor.value) : new Date();
     let cursorTs = anchor.getTime() / 1000;
     events = [];
@@ -769,24 +1334,20 @@ importGo.addEventListener("click", async () => {
     }
     titleTag = "[clockify]";
   }
-
   const r = await api("POST", "/api/import", {
     events, apply_label: overrideLabel, title_tag: titleTag,
   });
-  if (r.error) {
-    importGo.disabled = false;
-    return alert("Import failed: " + r.error);
-  }
+  if (r.error) { importGo.disabled = false; return alert("Import failed: " + r.error); }
   importModal.classList.add("hidden");
   await refreshLabels();
   await load();
-  const labelPart = r.labeled_targets
-    ? ` Created ${r.labeled_targets} label rule(s).`
-    : "";
+  const labelPart = r.labeled_targets ? ` Created ${r.labeled_targets} label rule(s).` : "";
   alert(`Imported ${r.inserted} events.${labelPart}`);
 });
 
-// ---------- settings ----------
+// ============================================================
+// Settings modal
+// ============================================================
 const settingsModal = document.getElementById("settings-modal");
 const settingsIdle = document.getElementById("settings-idle");
 const settingsForm = document.getElementById("settings-form");
@@ -803,7 +1364,6 @@ async function openSettings() {
   settingsIdle.focus();
 }
 
-document.getElementById("open-settings").addEventListener("click", openSettings);
 document.getElementById("settings-close").addEventListener("click", () => settingsModal.classList.add("hidden"));
 document.getElementById("settings-cancel").addEventListener("click", () => settingsModal.classList.add("hidden"));
 settingsModal.addEventListener("click", (e) => { if (e.target === settingsModal) settingsModal.classList.add("hidden"); });
@@ -824,150 +1384,25 @@ settingsForm.addEventListener("submit", async (e) => {
   load();
 });
 
-// ---------- restart ----------
-document.getElementById("restart-daemon").addEventListener("click", async () => {
+// ============================================================
+// Restart daemon
+// ============================================================
+async function restartDaemon() {
   if (!confirm("Restart the Omrum daemon? In-progress spans are flushed; tracking resumes in a second.")) return;
-  const btn = document.getElementById("restart-daemon");
-  btn.disabled = true;
-  btn.textContent = "Restarting…";
-  try { await api("POST", "/api/restart"); } catch (_) { /* server is going away */ }
-  // Poll health until the new daemon answers, then hard-reload so the UI picks up any code changes.
+  try { await api("POST", "/api/restart"); } catch (_) { /* server going away */ }
   for (let i = 0; i < 40; i++) {
     await new Promise((r) => setTimeout(r, 500));
     try {
       const r = await fetch("/api/health", { cache: "no-store" });
-      if (r.ok) {
-        location.href = "/?r=" + Date.now();
-        return;
-      }
+      if (r.ok) { location.href = "/?r=" + Date.now(); return; }
     } catch (_) { /* still down */ }
   }
-  btn.disabled = false;
-  btn.textContent = "↻ Restart";
   alert("Daemon didn't come back within 20s — check journalctl or /tmp/omrum-runtime.log.");
-});
-
-// ---------- main load ----------
-async function load() {
-  const qs = new URLSearchParams();
-  qs.set("period", state.period);
-  if (state.period === "range") {
-    if (!state.range.start || !state.range.end) {
-      const today = new Date();
-      const weekAgo = new Date(Date.now() - 6 * 86400000);
-      state.range = { start: dayStr(weekAgo), end: dayStr(today) };
-    }
-    qs.set("start", state.range.start);
-    qs.set("end", state.range.end);
-    document.getElementById("range-start").value = state.range.start;
-    document.getElementById("range-end").value = state.range.end;
-  } else if (state.anchor) {
-    qs.set("anchor", state.anchor);
-  }
-  const data = await api("GET", "/api/summary?" + qs.toString());
-
-  state.anchor = data.window.anchor;
-  state.window = { start: data.window.start, end: data.window.end, label: data.window.label };
-  document.getElementById("label-window").textContent = data.window.label;
-  document.getElementById("active").textContent = fmt(data.totals.active_seconds);
-  document.getElementById("idle").textContent = fmt(data.totals.idle_seconds);
-
-  const stats = data.stats || {};
-  document.getElementById("stat-productive").textContent = fmt(stats.productive_seconds || 0);
-  document.getElementById("stat-unproductive").textContent = fmt(stats.unproductive_seconds || 0);
-  const eff = stats.effectiveness || 0;
-  document.getElementById("stat-effectiveness").textContent =
-    eff > 0 ? `${(eff * 100).toFixed(0)}%` : "—";
-  document.getElementById("stat-effectiveness-sub").textContent =
-    stats.productivity > 0 ? `${(stats.productivity * 100).toFixed(0)}% of tracked` : "productive / (prod + unprod)";
-  if (stats.peak && stats.peak.productive > 0) {
-    const pd = new Date(stats.peak.t * 1000);
-    const pad = (n) => String(n).padStart(2, "0");
-    const bSec = stats.peak.bucket_s || 3600;
-    const endD = new Date((stats.peak.t + bSec) * 1000);
-    const label = bSec >= 86400
-      ? pd.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
-      : `${pad(pd.getHours())}:${pad(pd.getMinutes())}–${pad(endD.getHours())}:${pad(endD.getMinutes())}`;
-    document.getElementById("stat-peak").textContent = label;
-    document.getElementById("stat-peak-sub").textContent = `${fmt(stats.peak.productive)} productive`;
-  } else {
-    document.getElementById("stat-peak").textContent = "—";
-    document.getElementById("stat-peak-sub").textContent = "no productive time";
-  }
-
-  renderTimeline(data.timeline);
-  renderLabelBars(document.getElementById("by-label"), data.by_label);
-  renderGrouped(data.activity);
-
-  document.getElementById("prev").dataset.anchor = data.window.prev;
-  document.getElementById("next").dataset.anchor = data.window.next;
 }
 
-function setPeriod(p) {
-  state.period = p;
-  state.anchor = null;
-  for (const b of document.querySelectorAll(".tabs button")) {
-    b.classList.toggle("active", b.dataset.period === p);
-  }
-  document.getElementById("range-pickers").classList.toggle("hidden", p !== "range");
-  load();
-}
-
-document.querySelectorAll(".tabs button").forEach((b) =>
-  b.addEventListener("click", () => setPeriod(b.dataset.period)),
-);
-
-function applyNavAnchor(anchor) {
-  if (state.period === "range") {
-    const r = parseRangeAnchor(anchor);
-    if (r) state.range = r;
-  } else {
-    state.anchor = anchor;
-  }
-  load();
-}
-
-document.getElementById("prev").addEventListener("click", (e) => applyNavAnchor(e.currentTarget.dataset.anchor));
-document.getElementById("next").addEventListener("click", (e) => applyNavAnchor(e.currentTarget.dataset.anchor));
-document.getElementById("today").addEventListener("click", () => {
-  state.anchor = null;
-  if (state.period === "range") {
-    const today = new Date();
-    const weekAgo = new Date(Date.now() - 6 * 86400000);
-    state.range = { start: dayStr(weekAgo), end: dayStr(today) };
-  }
-  load();
-});
-
-// Range pickers
-document.getElementById("range-apply").addEventListener("click", () => {
-  const s = document.getElementById("range-start").value;
-  const e = document.getElementById("range-end").value;
-  if (!s || !e) return alert("Pick both start and end dates.");
-  state.range = { start: s, end: e };
-  state.period = "range";
-  for (const b of document.querySelectorAll(".tabs button")) {
-    b.classList.toggle("active", b.dataset.period === "range");
-  }
-  document.getElementById("range-pickers").classList.remove("hidden");
-  load();
-});
-document.querySelectorAll(".range-presets button").forEach((b) =>
-  b.addEventListener("click", () => {
-    const n = parseInt(b.dataset.preset, 10);
-    const today = new Date();
-    const start = new Date(Date.now() - (n - 1) * 86400000);
-    state.range = { start: dayStr(start), end: dayStr(today) };
-    state.period = "range";
-    for (const btn of document.querySelectorAll(".tabs button")) {
-      btn.classList.toggle("active", btn.dataset.period === "range");
-    }
-    document.getElementById("range-pickers").classList.remove("hidden");
-    load();
-  })
-);
-
-// ---------- min-duration filter ----------
+// ============================================================
+// Min-duration filter
+// ============================================================
 const minDurInput = document.getElementById("min-dur");
 const savedMin = localStorage.getItem("omrum_min_dur_min");
 if (savedMin !== null) minDurInput.value = savedMin;
@@ -976,11 +1411,47 @@ minDurInput.addEventListener("input", () => {
   const v = Math.max(0, parseFloat(minDurInput.value) || 0);
   localStorage.setItem("omrum_min_dur_min", String(v));
   clearTimeout(minDurTimer);
-  minDurTimer = setTimeout(load, 120);
+  minDurTimer = setTimeout(() => {
+    state.othersExpanded = {};
+    if (state.lastData) renderGrouped(state.lastData.activity || []);
+  }, 120);
 });
 
+// ============================================================
+// Keyboard shortcuts
+// ============================================================
+document.addEventListener("keydown", (e) => {
+  // ignore when typing in form fields, modals are open, or meta keys pressed
+  const tag = (e.target && e.target.tagName) || "";
+  if (/INPUT|TEXTAREA|SELECT/.test(tag)) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const anyModalOpen = Array.from(document.querySelectorAll(".modal")).some((m) => !m.classList.contains("hidden"));
+  if (anyModalOpen) return;
+
+  const k = e.key.toLowerCase();
+  if (k === "t") { document.getElementById("today").click(); }
+  else if (e.key === "ArrowLeft")  { document.getElementById("prev").click(); }
+  else if (e.key === "ArrowRight") { document.getElementById("next").click(); }
+  else if (k === "d") { setPeriod("day"); }
+  else if (k === "w") { setPeriod("week"); }
+  else if (k === "m") { setPeriod("month"); }
+  else if (k === "y") { setPeriod("year"); }
+  else if (k === "r") { setPeriod("range"); }
+  else if (k === "a") { openAddTime(); }
+  else if (k === "i") { openImport(); }
+  else if (e.key === "?" || (e.shiftKey && k === "/")) {
+    const btn = document.getElementById("help-keys");
+    if (helpMenu.classList.contains("hidden")) openHelp(btn);
+    else helpMenu.classList.add("hidden");
+  }
+});
+
+// ============================================================
+// Init
+// ============================================================
 (async () => {
   await refreshLabels();
   await load();
+  requestAnimationFrame(movePill);
   setInterval(load, 15000);
 })();
