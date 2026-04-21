@@ -377,8 +377,8 @@ kbd {
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 12px;
-  height: 150px;
+  padding: 14px;
+  height: 220px;
   position: relative;
 }
 .timeline.dense { gap: 1px; }
@@ -455,7 +455,25 @@ kbd {
   box-shadow: 0 0 10px var(--accent);
 }
 
-.legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.timeline-controls {
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: 8px; flex-wrap: wrap;
+}
+.candle-input {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-2); padding: 5px 8px; border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--muted); font-size: 12px;
+}
+.candle-input input {
+  background: var(--bg-1); border: 1px solid var(--border); color: var(--fg);
+  padding: 2px 6px; border-radius: 4px; width: 56px;
+  font-size: 12px;
+}
+.candle-input input:invalid { border-color: var(--c-unproductive); }
+.candle-input button { margin-left: 2px; }
+
+.legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); flex-wrap: wrap; justify-content: flex-end; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i.sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .legend .sw.productive   { background: var(--c-productive); }

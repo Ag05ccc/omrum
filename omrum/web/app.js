@@ -89,7 +89,14 @@ const state = {
   lastData: null,
   othersExpanded: {},          // per-category expansion state
   peakTime: null,              // ts of peak productive bucket (for ring glow)
+  bucketMin: {},               // { day: 5, week: null, ... } — null means auto
 };
+
+// Load per-period candle overrides from localStorage on startup.
+try {
+  const raw = localStorage.getItem("omrum_bucket_min");
+  if (raw) state.bucketMin = JSON.parse(raw) || {};
+} catch (_) { state.bucketMin = {}; }
 
 // ============================================================
 // Tabs — sliding pill
@@ -331,18 +338,23 @@ function renderTimeline(timeline, windowInfo, isTodayView) {
         : isMultiHour
           ? `${pad(when.getHours())}:00 – ${pad((when.getHours() + Math.round(bucketS / 3600)) % 24)}:00`
           : `${pad(when.getHours())}:00 – ${pad((when.getHours() + 1) % 24)}:00`;
-    const row = (d, v, cls) => v > 0
-      ? `<div class="tl-row"><span class="d"><i class="sw ${cls}" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--c-${cls});margin-right:6px;vertical-align:middle"></i>${d}</span><span class="v">${fmt(v)}</span></div>`
+    const topItems = Array.isArray(b.top_items) ? b.top_items : [];
+    const topRows = topItems.map((it) => `
+      <div class="tl-row">
+        <span class="d"><i class="sw" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--c-${it.cat});margin-right:6px;vertical-align:middle"></i>${escapeHtml(it.label)}</span>
+        <span class="v">${fmt(it.seconds)}</span>
+      </div>`).join("");
+    const idleRow = b.idle > 0
+      ? `<div class="tl-row"><span class="d"><i class="sw" style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--c-idle);margin-right:6px;vertical-align:middle"></i>idle</span><span class="v">${fmt(b.idle)}</span></div>`
       : "";
+    const body2 = topRows + idleRow ||
+      `<div class="tl-row" style="color:var(--muted)"><span class="d">No activity</span><span class="v"></span></div>`;
+    const unit = isDaily ? "day" : isMultiHour ? "window" : isMinute ? "slot" : "hour";
     const tip = `
       <div class="tl-tip">
         <div class="tl-title">${escapeHtml(tipHead)}</div>
-        ${row("Productive",   b.productive,   "productive")}
-        ${row("Unproductive", b.unproductive, "unproductive")}
-        ${row("Neutral",      b.neutral,      "neutral")}
-        ${row("Unlabeled",    b.unlabeled,    "unlabeled")}
-        ${row("Idle",         b.idle,         "idle")}
-        <div class="tl-foot">${Math.round(fill * 100)}% of ${isDaily ? "day" : "hour"} tracked</div>
+        ${body2}
+        <div class="tl-foot">${Math.round(fill * 100)}% of ${unit} tracked</div>
       </div>`;
     col.innerHTML = body + tip;
     frag.appendChild(col);
@@ -679,12 +691,12 @@ async function loadComparisons(windowInfo) {
       unproductive: avg(sparklines.unproductive),
       idle:         avg(sparklines.idle),
     };
-    // effectiveness score per bin → average
-    const binScores = bins.map((b) => {
-      const d = b.productive + b.unproductive;
-      return d > 0 ? (b.productive / d) * 100 : null;
-    }).filter((v) => v !== null);
-    avgs.score = binScores.length ? binScores.reduce((s, v) => s + v, 0) / binScores.length : null;
+    // Effectiveness baseline: time-weighted, matching the single-window
+    // formula in server.py. A per-bin mean over-weights short periods
+    // (e.g. a 5-min bin with 100% productive dominates a 40h bin at 50%).
+    const totalP = bins.reduce((s, b) => s + b.productive, 0);
+    const totalU = bins.reduce((s, b) => s + b.unproductive, 0);
+    avgs.score = (totalP + totalU) > 0 ? (totalP / (totalP + totalU)) * 100 : null;
 
     // windowLabel for narrative
     const windowLabel = ({
@@ -728,12 +740,15 @@ async function load() {
   } else if (state.anchor) {
     qs.set("anchor", state.anchor);
   }
+  const override = state.bucketMin[state.period];
+  if (override && override > 0) qs.set("bucket_min", String(override));
 
   const data = await api("GET", "/api/summary?" + qs.toString());
   state.lastData = data;
   state.anchor = data.window.anchor;
   state.window = { start: data.window.start, end: data.window.end, label: data.window.label };
   document.getElementById("label-window").textContent = data.window.label;
+  syncCandleInput(data.timeline);
 
   // render primary content with whatever comparisons we currently have
   renderHero(data, state.comparisons);
@@ -1444,6 +1459,72 @@ document.addEventListener("keydown", (e) => {
     if (helpMenu.classList.contains("hidden")) openHelp(btn);
     else helpMenu.classList.add("hidden");
   }
+});
+
+// ============================================================
+// Candle (timeline bucket size) control
+// ============================================================
+const candleInput = document.getElementById("candle-min");
+const candleReset = document.getElementById("candle-reset");
+
+function persistBucketMin() {
+  try { localStorage.setItem("omrum_bucket_min", JSON.stringify(state.bucketMin)); }
+  catch (_) { /* quota / disabled — fine */ }
+}
+
+function syncCandleInput(timeline) {
+  if (!timeline) return;
+  const bounds = timeline.bucket_min_bounds || { min: 1, max: 1440, default_min: 60 };
+  candleInput.min = String(bounds.min);
+  candleInput.max = String(bounds.max);
+  // Don't overwrite an actively-edited input on periodic auto-reloads.
+  if (document.activeElement === candleInput) return;
+  const override = state.bucketMin[state.period];
+  if (override != null) {
+    // Clamp a stale override against the active window's bounds.
+    const clamped = Math.max(bounds.min, Math.min(bounds.max, override));
+    if (clamped !== override) {
+      state.bucketMin[state.period] = clamped;
+      persistBucketMin();
+    }
+    candleInput.value = String(clamped);
+    candleInput.placeholder = `${bounds.default_min} (auto)`;
+  } else {
+    candleInput.value = "";
+    const effective = Math.round((timeline.bucket_s || bounds.default_min * 60) / 60);
+    candleInput.placeholder = `${effective} (auto)`;
+  }
+}
+
+let candleTimer = null;
+candleInput.addEventListener("input", () => {
+  clearTimeout(candleTimer);
+  candleTimer = setTimeout(() => {
+    const v = candleInput.value.trim();
+    if (v === "") {
+      if (state.bucketMin[state.period] != null) {
+        delete state.bucketMin[state.period];
+        persistBucketMin();
+        load();
+      }
+      return;
+    }
+    const n = parseFloat(v);
+    if (!isFinite(n) || n <= 0) return;
+    const min = parseFloat(candleInput.min) || 1;
+    const max = parseFloat(candleInput.max) || 1440;
+    const clamped = Math.max(min, Math.min(max, n));
+    state.bucketMin[state.period] = clamped;
+    persistBucketMin();
+    load();
+  }, 300);
+});
+
+candleReset.addEventListener("click", () => {
+  if (state.bucketMin[state.period] == null) return;
+  delete state.bucketMin[state.period];
+  persistBucketMin();
+  load();
 });
 
 // ============================================================

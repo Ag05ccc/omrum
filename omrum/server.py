@@ -111,12 +111,34 @@ class Handler(BaseHTTPRequestHandler):
             # Pick a timeline bucket that renders nicely across periods.
             span = max(1.0, win.end_ts - win.start_ts)
             if span <= 36 * 3600:           # day → 5-minute candles
-                bucket_s = 300.0
+                auto_bucket_s = 300.0
             elif span <= 10 * 86400:        # week/short range → 4h bars
-                bucket_s = 4 * 3600.0
+                auto_bucket_s = 4 * 3600.0
             else:                            # month/year/range → 1 day bars
-                bucket_s = 86400.0
-            timeline = storage.summary_timeline(win.start_ts, win.end_ts, bucket_s)
+                auto_bucket_s = 86400.0
+            # Optional override: ?bucket_min=N (minutes). Clamped to a range
+            # that keeps the chart readable: at least 1 minute, and at most
+            # span/4 so we always render a handful of candles.
+            bucket_s = auto_bucket_s
+            raw_bucket = qs.get("bucket_min")
+            if raw_bucket:
+                try:
+                    mins = float(raw_bucket)
+                except (TypeError, ValueError):
+                    mins = 0.0
+                if mins > 0:
+                    req_s = mins * 60.0
+                    max_s = max(60.0, span / 4.0)
+                    bucket_s = max(60.0, min(req_s, max_s))
+            # For the today view, stop the timeline at "now" so the axis
+            # doesn't stretch into empty future hours.
+            tl_end = win.end_ts
+            now_ts = time.time()
+            if win.period == "day" and now_ts < tl_end and now_ts > win.start_ts:
+                # Align to the next bucket boundary so the last bar is complete.
+                bi = int((now_ts - win.start_ts) // bucket_s) + 1
+                tl_end = min(win.end_ts, win.start_ts + bi * bucket_s)
+            timeline = storage.summary_timeline(win.start_ts, tl_end, bucket_s)
 
             # Derived productivity stats.
             p_total = sum(b["productive"] for b in timeline)
@@ -149,7 +171,15 @@ class Handler(BaseHTTPRequestHandler):
                 "apps": _attach(storage.summary_by_app(win.start_ts, win.end_ts), "app"),
                 "domains": _attach(storage.summary_by_domain(win.start_ts, win.end_ts), "domain"),
                 "by_label": storage.summary_by_label(win.start_ts, win.end_ts),
-                "timeline": {"bucket_s": bucket_s, "buckets": timeline},
+                "timeline": {
+                    "bucket_s": bucket_s,
+                    "buckets": timeline,
+                    "bucket_min_bounds": {
+                        "min": 1,
+                        "max": max(1, int(span / 4 // 60)),
+                        "default_min": int(auto_bucket_s // 60),
+                    },
+                },
                 "stats": {
                     "productive_seconds": p_total,
                     "unproductive_seconds": u_total,
