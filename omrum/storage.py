@@ -327,6 +327,8 @@ def summary_timeline(start_ts: float, end_ts: float, bucket_s: float):
             "t": t, "productive": 0.0, "unproductive": 0.0,
             "neutral": 0.0, "unlabeled": 0.0, "idle": 0.0,
         })
+    # Parallel per-bucket breakdown: {(label, kind, cat) -> seconds}.
+    items_per_bucket: list[dict] = [{} for _ in buckets]
 
     with cursor() as cur:
         cur.execute("SELECT id, name FROM labels")
@@ -363,14 +365,36 @@ def summary_timeline(start_ts: float, end_ts: float, bucket_s: float):
                     else:
                         cat = "neutral"
 
+            if is_idle:
+                item_key = None
+            elif domain:
+                item_key = (domain, "web", cat)
+            else:
+                item_key = ((app or "(unknown)"), "app", cat)
+
             bi = int((s - start_ts) // bucket_s)
             while s < e and 0 <= bi < len(buckets):
                 bend = start_ts + (bi + 1) * bucket_s
                 step = min(e, bend) - s
                 if step > 0:
                     buckets[bi][cat] += step
+                    if item_key is not None:
+                        items_per_bucket[bi][item_key] = (
+                            items_per_bucket[bi].get(item_key, 0.0) + step
+                        )
                 s = bend
                 bi += 1
+
+    # Finalize: top 3 apps/urls per bucket so tooltips can show them.
+    for i, items in enumerate(items_per_bucket):
+        if not items:
+            buckets[i]["top_items"] = []
+            continue
+        ranked = sorted(items.items(), key=lambda kv: -kv[1])[:3]
+        buckets[i]["top_items"] = [
+            {"label": k[0], "kind": k[1], "cat": k[2], "seconds": v}
+            for k, v in ranked
+        ]
 
     return buckets
 

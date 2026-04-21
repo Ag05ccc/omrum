@@ -148,12 +148,20 @@
           <h2>Productivity timeline</h2>
           <p class="hint" id="timeline-hint">Each column is one hour. Hover for details.</p>
         </div>
-        <div class="legend">
-          <span><i class="sw productive"></i>Productive</span>
-          <span><i class="sw unproductive"></i>Unproductive</span>
-          <span><i class="sw neutral"></i>Neutral</span>
-          <span><i class="sw unlabeled"></i>Unlabeled</span>
-          <span><i class="sw idle"></i>Idle</span>
+        <div class="timeline-controls">
+          <label class="candle-input" title="Size of each bar in minutes">
+            Candle
+            <input id="candle-min" type="number" min="1" step="1" placeholder="auto" />
+            <span>min</span>
+            <button type="button" id="candle-reset" class="btn-ghost small" title="Back to auto">Auto</button>
+          </label>
+          <div class="legend">
+            <span><i class="sw productive"></i>Productive</span>
+            <span><i class="sw unproductive"></i>Unproductive</span>
+            <span><i class="sw neutral"></i>Neutral</span>
+            <span><i class="sw unlabeled"></i>Unlabeled</span>
+            <span><i class="sw idle"></i>Idle</span>
+          </div>
         </div>
       </div>
       <div class="timeline-wrap">
