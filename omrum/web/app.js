@@ -602,6 +602,21 @@ function renderGrouped(items) {
   el.appendChild(frag);
 }
 
+// Strip redundant browser suffixes from X11 window titles so the tooltip
+// doesn't repeat " - Google Chrome" on every row.
+const BROWSER_SUFFIXES = [
+  " - Google Chrome", " — Google Chrome",
+  " - Chromium", " - Mozilla Firefox",
+  " - Brave", " - Microsoft Edge", " - Opera", " - Vivaldi",
+];
+function cleanTitle(t) {
+  let s = String(t || "").trim();
+  for (const suf of BROWSER_SUFFIXES) {
+    if (s.endsWith(suf)) { s = s.slice(0, -suf.length); break; }
+  }
+  return s;
+}
+
 function makeActivityRow(it, cat, maxSec, groupTotal) {
   const div = document.createElement("div");
   div.className = `wrow ${cat}`;
@@ -619,6 +634,24 @@ function makeActivityRow(it, cat, maxSec, groupTotal) {
     ? `<span class="sub">${escapeHtml(it.assigned.name)}</span>`
     : "";
 
+  const titles = Array.isArray(it.top_titles) ? it.top_titles : [];
+  let tipHtml = "";
+  if (titles.length) {
+    const rows = titles.map((t) => `
+      <div class="tl-row">
+        <span class="d">${escapeHtml(cleanTitle(t.title) || "(untitled)")}</span>
+        <span class="v">${fmt(t.seconds)}</span>
+      </div>`).join("");
+    const coverage = titles.reduce((s, t) => s + (t.seconds || 0), 0);
+    const coveragePct = it.seconds > 0 ? Math.round((coverage / it.seconds) * 100) : 0;
+    tipHtml = `
+      <div class="wrow-tip">
+        <div class="tl-title">${escapeHtml(it.label)} · top windows</div>
+        ${rows}
+        <div class="tl-foot">${coveragePct}% of ${fmt(it.seconds)} shown</div>
+      </div>`;
+  }
+
   div.innerHTML = `
     ${iconHtml}
     <span class="name" title="${escapeHtml(it.label)}">${escapeHtml(it.label)}${assigned}</span>
@@ -626,6 +659,7 @@ function makeActivityRow(it, cat, maxSec, groupTotal) {
     <span class="time">${fmt(it.seconds)}</span>
     <span class="pct">${pct.toFixed(0)}%</span>
     <button class="more" title="Actions" aria-label="Actions">⋯</button>
+    ${tipHtml}
   `;
   const tt = it.kind === "web" ? "domain" : "app";
   div.addEventListener("click", (e) => {

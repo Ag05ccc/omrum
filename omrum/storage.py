@@ -284,9 +284,15 @@ def summary_by_domain(start_ts: float, end_ts: float, include_idle: bool = False
                  "last_seen": r[2], "first_seen": r[3]} for r in cur.fetchall()]
 
 
-def summary_activity(start_ts: float, end_ts: float, include_idle: bool = False, limit: int = 200):
+def summary_activity(start_ts: float, end_ts: float, include_idle: bool = False,
+                     limit: int = 200, titles_per_row: int = 5, min_title_seconds: float = 5.0):
     """URL-aware: browser spans bucket by domain, others by app. Replaces the
-    old "apps" view where chrome/firefox would swallow all browser time."""
+    old "apps" view where chrome/firefox would swallow all browser time.
+
+    Each row also carries the top `titles_per_row` window titles (by time)
+    so the UI can surface "what pages / windows were these?" on hover —
+    particularly useful for the bare `chrome` row where no URL was captured.
+    """
     q = (
         "SELECT "
         "  CASE WHEN domain IS NOT NULL AND domain != '' THEN domain ELSE app END AS label, "
@@ -296,10 +302,37 @@ def summary_activity(start_ts: float, end_ts: float, include_idle: bool = False,
         f"FROM events {_overlap_filter(include_idle)}"
         "GROUP BY label, kind ORDER BY total DESC LIMIT :limit"
     )
+    # Fetch per-(label, kind, title) totals so we can attach top titles to
+    # each row in Python. One extra query over the same events is cheaper
+    # than correlating a subquery for each row.
+    q_titles = (
+        "SELECT "
+        "  CASE WHEN domain IS NOT NULL AND domain != '' THEN domain ELSE app END AS label, "
+        "  CASE WHEN domain IS NOT NULL AND domain != '' THEN 'web' ELSE 'app' END AS kind, "
+        "  title, "
+        f" SUM({_CLIPPED}) AS total "
+        f"FROM events {_overlap_filter(include_idle)}"
+        "AND title IS NOT NULL AND title != '' "
+        "GROUP BY label, kind, title "
+        "HAVING total >= :min_sec "
+        "ORDER BY label, kind, total DESC"
+    )
     with cursor() as cur:
         cur.execute(q, {"start": start_ts, "end": end_ts, "limit": limit})
-        return [{"label": r[0], "kind": r[1], "seconds": r[2] or 0.0,
-                 "last_seen": r[3], "first_seen": r[4]} for r in cur.fetchall()]
+        rows = [{"label": r[0], "kind": r[1], "seconds": r[2] or 0.0,
+                 "last_seen": r[3], "first_seen": r[4], "top_titles": []}
+                for r in cur.fetchall()]
+        index = {(r["label"], r["kind"]): r for r in rows}
+        cur.execute(q_titles, {"start": start_ts, "end": end_ts,
+                               "min_sec": min_title_seconds})
+        for label, kind, title, total in cur.fetchall():
+            row = index.get((label, kind))
+            if row is None:
+                continue
+            if len(row["top_titles"]) >= titles_per_row:
+                continue
+            row["top_titles"].append({"title": title, "seconds": total or 0.0})
+        return rows
 
 
 # Map "well-known" label names to productivity categories for the timeline view.
