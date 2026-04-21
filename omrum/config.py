@@ -12,7 +12,13 @@ POLL_INTERVAL_S = float(os.environ.get("OMRUM_POLL", "2.0"))
 # Default idle threshold: 5 minutes. Overridable at runtime from the Settings
 # UI (stored in the `settings` table) and at daemon start via OMRUM_IDLE.
 IDLE_THRESHOLD_S = float(os.environ.get("OMRUM_IDLE", "300"))
-BROWSER_EVENT_TTL_S = 5.0
+# Max age of a browser URL push before the tracker treats it as stale and
+# falls back to app-only attribution. The extension sends a heartbeat every
+# ~15s intent, but Chrome MV3 silently clamps `chrome.alarms` periods to
+# ~1 minute, so in practice heartbeats land every 60s. TTLs shorter than
+# that caused long passive sessions (e.g. watching a YouTube video without
+# navigating) to be attributed to `chrome` instead of the real domain.
+BROWSER_EVENT_TTL_S = 90.0
 
 BROWSER_APPS = {
     "firefox", "firefox-bin", "firefox-esr",
