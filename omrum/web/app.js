@@ -31,6 +31,10 @@ const dayStr = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDa
 const escapeHtml = (s) =>
   String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+// Label colors go into HTML attributes. The server only accepts hex now, but
+// rows stored before that check could hold anything.
+const safeColor = (c) => (/^#(?:[0-9a-f]{3}){1,2}$/i.test(c) ? c : "#888888");
+
 function parseRangeAnchor(s) {
   const [a, b] = String(s || "").split("..");
   return (a && b) ? { start: a, end: b } : null;
@@ -458,7 +462,7 @@ function renderCategory(byLabel, comparisons) {
     }
 
     row.innerHTML = `
-      <span class="dot" style="background:${it.color || "var(--c-unlabeled)"}"></span>
+      <span class="dot" style="background:${it.color ? safeColor(it.color) : "var(--c-unlabeled)"}"></span>
       <span class="cat-name">${escapeHtml(it.name)}</span>
       <span class="cat-time">${fmt(it.seconds || 0)}</span>
       <span class="cat-pct">${pct.toFixed(1)}%</span>
@@ -625,7 +629,7 @@ function makeActivityRow(it, cat, maxSec, groupTotal) {
 
   let iconHtml;
   if (it.kind === "web") {
-    iconHtml = `<span class="icon"><img src="${faviconUrl(it.label)}" alt="" loading="lazy" onerror="this.remove()"/></span>`;
+    iconHtml = `<span class="icon"><img src="${faviconUrl(it.label)}" alt="" loading="lazy"/></span>`;
   } else {
     iconHtml = `<span class="icon app">${escapeHtml(appInitial(it.label))}</span>`;
   }
@@ -661,6 +665,7 @@ function makeActivityRow(it, cat, maxSec, groupTotal) {
     <button class="more" title="Actions" aria-label="Actions">⋯</button>
     ${tipHtml}
   `;
+  div.querySelector(".icon img")?.addEventListener("error", (e) => e.target.remove());
   const tt = it.kind === "web" ? "domain" : "app";
   div.addEventListener("click", (e) => {
     if (e.target.closest(".more")) return;
@@ -895,7 +900,7 @@ function openPicker(anchorEl, target_type, target, currentLabelId) {
   for (const lb of state.labels) {
     const li = document.createElement("li");
     if (lb.id === currentLabelId) li.classList.add("current");
-    li.innerHTML = `<span class="dot" style="background:${lb.color}"></span><span>${escapeHtml(lb.name)}</span>`;
+    li.innerHTML = `<span class="dot" style="background:${safeColor(lb.color)}"></span><span>${escapeHtml(lb.name)}</span>`;
     li.addEventListener("click", () => assign(lb.id));
     pickerList.appendChild(li);
   }
@@ -1036,9 +1041,9 @@ function renderLabelList() {
   for (const lb of state.labels) {
     const li = document.createElement("li");
     li.innerHTML = `
-      <span class="swatch" style="background:${lb.color}"></span>
+      <span class="swatch" style="background:${safeColor(lb.color)}"></span>
       <input type="text" value="${escapeHtml(lb.name)}" data-id="${lb.id}" />
-      <input type="color" value="${lb.color}" data-id="${lb.id}" />
+      <input type="color" value="${safeColor(lb.color)}" data-id="${lb.id}" />
       <button title="Delete" data-id="${lb.id}">×</button>
     `;
     const [nameInput, colorInput, delBtn] = li.querySelectorAll("input[type=text], input[type=color], button");

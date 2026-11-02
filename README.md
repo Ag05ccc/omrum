@@ -181,6 +181,7 @@ Environment variables:
 | `OMRUM_DATA`   | `~/.local/share/omrum`       | Database directory.          |
 | `OMRUM_HOST`   | `127.0.0.1`                  | HTTP bind address.           |
 | `OMRUM_PORT`   | `7942`                       | HTTP port.                   |
+| `OMRUM_ALLOWED_HOSTS` | (empty)               | Extra host names the server answers to, comma-separated. |
 | `OMRUM_POLL`   | `2.0`                        | Polling interval in seconds. |
 | `OMRUM_IDLE`   | `120`                        | Idle threshold in seconds.   |
 
@@ -204,6 +205,8 @@ The dashboard talks to these endpoints; they're also scriptable.
 | POST   | `/api/restart`                 | Re-exec the daemon (preserves data).      |
 
 `/api/summary` accepts `period=day|week|month|year|range` plus either `anchor=YYYY-MM-DD` or, for range, `start=YYYY-MM-DD&end=YYYY-MM-DD`. Response includes `window` (prev/next anchors for navigation), `totals`, `activity`, `apps`, `domains`, `by_label`.
+
+So that websites you visit can't reach your data, the server answers 403 to requests addressed to an unknown host name or sent from another origin. Scripts and `curl` work as usual because they send no `Origin` header. Browser extensions can only call `/api/browser`. If you bind to `0.0.0.0` and open the dashboard by LAN name or IP, add that name to `OMRUM_ALLOWED_HOSTS`. The API has no login, so anyone who can reach the port can use it.
 
 ## Project layout
 
@@ -237,6 +240,9 @@ OMRUM_DATA=/tmp/omrum-dev python -m omrum -v
 
 # Peek at the DB
 sqlite3 ~/.local/share/omrum/omrum.db .schema
+
+# Run the tests (they use a temp DB, never your real one)
+python -m unittest discover -s tests
 ```
 
 ## Roadmap

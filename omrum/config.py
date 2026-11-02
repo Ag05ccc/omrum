@@ -7,6 +7,12 @@ DB_PATH = DATA_DIR / "omrum.db"
 
 HTTP_HOST = os.environ.get("OMRUM_HOST", "127.0.0.1")
 HTTP_PORT = int(os.environ.get("OMRUM_PORT", "7942"))
+# Host names the HTTP server answers to; anything else gets a 403, which stops
+# DNS-rebinding attacks. Extend it with OMRUM_ALLOWED_HOSTS when binding to
+# 0.0.0.0 and reaching the dashboard by LAN name or IP.
+ALLOWED_HOSTS = {"127.0.0.1", "localhost", HTTP_HOST.lower()} | {
+    h.strip().lower() for h in os.environ.get("OMRUM_ALLOWED_HOSTS", "").split(",") if h.strip()
+}
 
 POLL_INTERVAL_S = float(os.environ.get("OMRUM_POLL", "2.0"))
 # Default idle threshold: 5 minutes. Overridable at runtime from the Settings

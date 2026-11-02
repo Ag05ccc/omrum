@@ -6,10 +6,29 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files as resource_files
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import browser_state, config, periods, storage
 
 log = logging.getLogger("omrum.server")
+
+# Extension ids can't be pinned (unpacked ids depend on the install path), so
+# any extension may report the active tab, but only through this one endpoint.
+_EXTENSION_ORIGINS = ("chrome-extension://", "moz-extension://")
+_EXTENSION_PATH = "/api/browser"
+
+# Keep in sync with the external resources index.html and app.js load.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src https://fonts.gstatic.com; "
+    "img-src 'self' https://www.google.com https://*.gstatic.com; "
+    "connect-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
 
 
 def _read_web(name: str) -> bytes:
@@ -22,17 +41,48 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:  # quieter default
         log.debug("%s - " + fmt, self.address_string(), *args)
 
-    # CORS for the browser extension
+    def _extension_origin(self) -> str | None:
+        origin = self.headers.get("Origin", "")
+        if origin.startswith(_EXTENSION_ORIGINS) and self.path.split("?", 1)[0] == _EXTENSION_PATH:
+            return origin
+        return None
+
+    def _reject_foreign(self) -> bool:
+        """Answer 403 to anything a website could have triggered; returns True
+        if it did. The Host check stops DNS rebinding and the Origin check stops
+        cross-site reads and writes. Clients that send no Origin (curl, scripts)
+        pass, since browsers always send one on cross-origin fetches and POSTs."""
+        host = self.headers.get("Host", "")
+        try:
+            hostname = urlsplit("//" + host).hostname
+        except ValueError:
+            hostname = None
+        origin = self.headers.get("Origin")
+        origin_ok = (
+            origin is None
+            or origin.lower() == f"http://{host}".lower()
+            or self._extension_origin() is not None
+        )
+        if hostname in config.ALLOWED_HOSTS and origin_ok:
+            return False
+        self._json(403, {"error": "forbidden"})
+        return True
+
+    # CORS for the browser extension only; other origins get no CORS headers.
     def _cors(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        origin = self._extension_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _json(self, code: int, body: Any) -> None:
         payload = json.dumps(body).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
+        self.send_header("X-Content-Type-Options", "nosniff")
         self._cors()
         self.end_headers()
         self.wfile.write(payload)
@@ -46,15 +96,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", _CSP)
         self.end_headers()
         self.wfile.write(data)
 
     def do_OPTIONS(self) -> None:
+        if self._reject_foreign():
+            return
         self.send_response(204)
         self._cors()
         self.end_headers()
 
     def do_GET(self) -> None:
+        if self._reject_foreign():
+            return
         path = self.path.split("?", 1)[0]
         qs = dict(
             kv.split("=", 1) if "=" in kv else (kv, "")
@@ -194,6 +250,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self) -> None:
+        if self._reject_foreign():
+            return
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length", "0") or 0)
         raw = self.rfile.read(length) if length > 0 else b""
@@ -291,6 +349,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_DELETE(self) -> None:
+        if self._reject_foreign():
+            return
         path = self.path.split("?", 1)[0]
         if path.startswith("/api/labels/"):
             try:
@@ -324,6 +384,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_PATCH(self) -> None:
+        if self._reject_foreign():
+            return
         path = self.path.split("?", 1)[0]
         length = int(self.headers.get("Content-Length", "0") or 0)
         raw = self.rfile.read(length) if length > 0 else b""
@@ -336,7 +398,10 @@ class Handler(BaseHTTPRequestHandler):
                 lid = int(path.rsplit("/", 1)[1])
             except ValueError:
                 return self._json(400, {"error": "bad id"})
-            ok = storage.update_label(lid, body.get("name"), body.get("color"))
+            try:
+                ok = storage.update_label(lid, body.get("name"), body.get("color"))
+            except Exception as e:
+                return self._json(400, {"error": str(e)})
             return self._json(200 if ok else 404, {"ok": ok})
         self.send_error(404)
 

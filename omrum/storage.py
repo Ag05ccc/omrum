@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -474,7 +475,17 @@ def list_rules():
                 for r in cur.fetchall()]
 
 
+_COLOR_RE = re.compile(r"#(?:[0-9a-fA-F]{3}){1,2}")
+
+
+def _check_color(color: str) -> None:
+    # Label colors are rendered into the dashboard's HTML, so only hex gets in.
+    if not _COLOR_RE.fullmatch(color):
+        raise ValueError("color must be a hex value like #4ade80")
+
+
 def create_label(name: str, color: str) -> dict:
+    _check_color(color)
     with cursor() as cur:
         cur.execute("INSERT INTO labels (name, color) VALUES (?, ?)", (name, color))
         lid = cur.lastrowid
@@ -486,6 +497,7 @@ def update_label(label_id: int, name: Optional[str], color: Optional[str]) -> bo
     if name is not None:
         fields.append("name = ?"); params.append(name)
     if color is not None:
+        _check_color(color)
         fields.append("color = ?"); params.append(color)
     if not fields:
         return True
