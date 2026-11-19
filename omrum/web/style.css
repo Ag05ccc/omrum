@@ -640,10 +640,14 @@ kbd {
   background: var(--bg-2);
   overflow: hidden;
 }
-.wrow .icon img { width: 18px; height: 18px; display: block; }
 .wrow .icon.app {
   background: linear-gradient(135deg, #2a3444, #1a2332);
   color: var(--fg-2);
+}
+.wrow .icon.web {
+  background: rgba(45, 212, 191, 0.14);
+  color: #5eead4;
+  border-radius: 50%;
 }
 .wrow .name {
   color: var(--fg); font-weight: 500;

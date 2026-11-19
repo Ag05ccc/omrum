@@ -206,7 +206,9 @@ The dashboard talks to these endpoints; they're also scriptable.
 
 `/api/summary` accepts `period=day|week|month|year|range` plus either `anchor=YYYY-MM-DD` or, for range, `start=YYYY-MM-DD&end=YYYY-MM-DD`. Response includes `window` (prev/next anchors for navigation), `totals`, `activity`, `apps`, `domains`, `by_label`.
 
-So that websites you visit can't reach your data, the server answers 403 to requests addressed to an unknown host name or sent from another origin. Scripts and `curl` work as usual because they send no `Origin` header. Browser extensions can only call `/api/browser`. If you bind to `0.0.0.0` and open the dashboard by LAN name or IP, add that name to `OMRUM_ALLOWED_HOSTS`. The API has no login, so anyone who can reach the port can use it.
+A timeline holds at most 12,000 buckets; a wider window gets coarser buckets, and dates outside the calendar get a 400.
+
+So that websites you visit can't reach your data, the server answers 403 to requests addressed to an unknown host name, sent from another origin, or marked by the browser as coming from another site (`Sec-Fetch-Site`). The last check covers `<img>` and `<script>` tags on a web page, which send no `Origin`. A link to the dashboard from another page still opens it. Scripts and `curl` work as usual because they send neither header. Browser extensions can only call `/api/browser`. The dashboard itself loads nothing from other hosts: fonts come from your system and rows show letter icons instead of fetched favicons. If you bind to `0.0.0.0` and open the dashboard by LAN name or IP, add that name to `OMRUM_ALLOWED_HOSTS`. The API has no login, so anyone who can reach the port can use it.
 
 ## Project layout
 

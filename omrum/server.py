@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+import math
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,13 +18,19 @@ log = logging.getLogger("omrum.server")
 _EXTENSION_ORIGINS = ("chrome-extension://", "moz-extension://")
 _EXTENSION_PATH = "/api/browser"
 
-# Keep in sync with the external resources index.html and app.js load.
+# Upper bound on timeline buckets in one /api/summary answer. A week of
+# 1-minute candles (10,080) still fits; a request for centuries of data gets
+# coarser buckets instead of an answer of hundreds of megabytes.
+_MAX_TIMELINE_BUCKETS = 12_000
+
+# The dashboard loads nothing from other hosts, so opening it tells nobody
+# which sites were tracked. The policy enforces that.
 _CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-    "font-src https://fonts.gstatic.com; "
-    "img-src 'self' https://www.google.com https://*.gstatic.com; "
+    "style-src 'self' 'unsafe-inline'; "
+    "font-src 'self'; "
+    "img-src 'self'; "
     "connect-src 'self'; "
     "base-uri 'none'; "
     "form-action 'self'; "
@@ -47,23 +54,45 @@ class Handler(BaseHTTPRequestHandler):
             return origin
         return None
 
+    def _sent_by_another_site(self) -> bool:
+        """True when the browser reports that another site made this request.
+        An <img>, <script> or <link> pointed here from a web page carries no
+        Origin header, so Sec-Fetch-Site is the only thing that gives it away.
+        Clients that don't send the header (curl, scripts) pass."""
+        site = self.headers.get("Sec-Fetch-Site")
+        if site is None or site in ("same-origin", "none"):
+            return False
+        # Following a link to the dashboard from another page is fine; it only
+        # loads the static shell, never the API.
+        if (
+            self.command == "GET"
+            and self.headers.get("Sec-Fetch-Mode") == "navigate"
+            and self.headers.get("Sec-Fetch-Dest") == "document"
+            and not self.path.startswith("/api/")
+        ):
+            return False
+        return True
+
     def _reject_foreign(self) -> bool:
         """Answer 403 to anything a website could have triggered; returns True
-        if it did. The Host check stops DNS rebinding and the Origin check stops
-        cross-site reads and writes. Clients that send no Origin (curl, scripts)
-        pass, since browsers always send one on cross-origin fetches and POSTs."""
+        if it did. The Host check stops DNS rebinding, the Origin check stops
+        cross-site reads and writes, and the Sec-Fetch-Site check stops the
+        cross-site GETs that carry no Origin. Clients that send neither header
+        (curl, scripts) pass."""
         host = self.headers.get("Host", "")
         try:
             hostname = urlsplit("//" + host).hostname
         except ValueError:
             hostname = None
         origin = self.headers.get("Origin")
+        from_extension = self._extension_origin() is not None
         origin_ok = (
             origin is None
             or origin.lower() == f"http://{host}".lower()
-            or self._extension_origin() is not None
+            or from_extension
         )
-        if hostname in config.ALLOWED_HOSTS and origin_ok:
+        site_ok = from_extension or not self._sent_by_another_site()
+        if hostname in config.ALLOWED_HOSTS and origin_ok and site_ok:
             return False
         self._json(403, {"error": "forbidden"})
         return True
@@ -140,12 +169,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/summary":
             # back-compat: accept legacy ?date=YYYY-MM-DD as day-period anchor
             anchor = qs.get("anchor") or qs.get("date")
-            win = periods.resolve(
-                qs.get("period"),
-                anchor=anchor,
-                start=qs.get("start"),
-                end=qs.get("end"),
-            )
+            try:
+                win = periods.resolve(
+                    qs.get("period"),
+                    anchor=anchor,
+                    start=qs.get("start"),
+                    end=qs.get("end"),
+                )
+            except (OverflowError, ValueError):
+                return self._json(400, {"error": "date out of range"})
             labels = storage.list_labels()
             rules = storage.list_rules()
             rule_map = {(r["target_type"], r["target"]): r["label_id"] for r in rules}
@@ -172,10 +204,13 @@ class Handler(BaseHTTPRequestHandler):
                 auto_bucket_s = 4 * 3600.0
             else:                            # month/year/range → 1 day bars
                 auto_bucket_s = 86400.0
+            # Smallest bucket this window may use: whole minutes, and never so
+            # small that the timeline exceeds _MAX_TIMELINE_BUCKETS.
+            min_bucket_s = max(60.0, math.ceil(span / _MAX_TIMELINE_BUCKETS / 60.0) * 60.0)
             # Optional override: ?bucket_min=N (minutes). Clamped to a range
-            # that keeps the chart readable: at least 1 minute, and at most
-            # span/4 so we always render a handful of candles.
-            bucket_s = auto_bucket_s
+            # that keeps the chart readable: at least min_bucket_s, and at
+            # most span/4 so we always render a handful of candles.
+            bucket_s = max(auto_bucket_s, min_bucket_s)
             raw_bucket = qs.get("bucket_min")
             if raw_bucket:
                 try:
@@ -184,8 +219,8 @@ class Handler(BaseHTTPRequestHandler):
                     mins = 0.0
                 if mins > 0:
                     req_s = mins * 60.0
-                    max_s = max(60.0, span / 4.0)
-                    bucket_s = max(60.0, min(req_s, max_s))
+                    max_s = max(min_bucket_s, span / 4.0)
+                    bucket_s = max(min_bucket_s, min(req_s, max_s))
             # For the today view, stop the timeline at "now" so the axis
             # doesn't stretch into empty future hours.
             tl_end = win.end_ts
@@ -231,8 +266,8 @@ class Handler(BaseHTTPRequestHandler):
                     "bucket_s": bucket_s,
                     "buckets": timeline,
                     "bucket_min_bounds": {
-                        "min": 1,
-                        "max": max(1, int(span / 4 // 60)),
+                        "min": int(min_bucket_s // 60),
+                        "max": max(int(min_bucket_s // 60), int(span / 4 // 60)),
                         "default_min": int(auto_bucket_s // 60),
                     },
                 },

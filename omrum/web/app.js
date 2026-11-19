@@ -491,10 +491,8 @@ function toggleCategoryFilter(key) {
 // ============================================================
 // Where time went
 // ============================================================
-function faviconUrl(domain) {
-  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`;
-}
-
+// Rows get a letter icon. Fetching favicons would tell a third party every
+// domain in the list, so the dashboard loads nothing from other hosts.
 function appInitial(name) {
   return (name || "?").trim().charAt(0).toUpperCase() || "·";
 }
@@ -627,12 +625,8 @@ function makeActivityRow(it, cat, maxSec, groupTotal) {
   const pct = groupTotal > 0 ? ((it.seconds || 0) / groupTotal) * 100 : 0;
   const barPct = Math.max(2, ((it.seconds || 0) / maxSec) * 100);
 
-  let iconHtml;
-  if (it.kind === "web") {
-    iconHtml = `<span class="icon"><img src="${faviconUrl(it.label)}" alt="" loading="lazy"/></span>`;
-  } else {
-    iconHtml = `<span class="icon app">${escapeHtml(appInitial(it.label))}</span>`;
-  }
+  const iconHtml =
+    `<span class="icon ${it.kind === "web" ? "web" : "app"}">${escapeHtml(appInitial(it.label))}</span>`;
 
   const assigned = it.assigned
     ? `<span class="sub">${escapeHtml(it.assigned.name)}</span>`
@@ -665,7 +659,6 @@ function makeActivityRow(it, cat, maxSec, groupTotal) {
     <button class="more" title="Actions" aria-label="Actions">⋯</button>
     ${tipHtml}
   `;
-  div.querySelector(".icon img")?.addEventListener("error", (e) => e.target.remove());
   const tt = it.kind === "web" ? "domain" : "app";
   div.addEventListener("click", (e) => {
     if (e.target.closest(".more")) return;

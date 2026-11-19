@@ -169,6 +169,83 @@ class SecurityTests(unittest.TestCase):
                                     {"Origin": "https://chrome-extension.evil.example"})
         self.assertEqual(status, 403)
 
+    # ---------- cross-site GETs that carry no Origin ----------
+
+    def test_cross_site_subresource_gets_are_rejected(self) -> None:
+        # What an <img>, <script> or <link> on a web page sends: no Origin.
+        for site in ("cross-site", "same-site"):
+            headers = {"Sec-Fetch-Site": site, "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"}
+            for path in ("/api/summary", "/api/health", "/style.css", "/app.js", "/"):
+                with self.subTest(site=site, path=path):
+                    status, _, _ = self.request("GET", path, headers=headers)
+                    self.assertEqual(status, 403)
+
+    def test_cross_site_navigation_reaches_the_dashboard_but_not_the_api(self) -> None:
+        headers = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+        status, _, _ = self.request("GET", "/", headers=headers)
+        self.assertEqual(status, 200)
+        status, _, _ = self.request("GET", "/api/summary", headers=headers)
+        self.assertEqual(status, 403)
+        # A framed dashboard is a navigation too, but not a top-level one.
+        status, _, _ = self.request("GET", "/", headers={**headers, "Sec-Fetch-Dest": "iframe"})
+        self.assertEqual(status, 403)
+
+    def test_own_requests_pass_the_fetch_site_check(self) -> None:
+        for site in ("same-origin", "none"):
+            with self.subTest(site=site):
+                status, _, _ = self.request("GET", "/api/labels", headers={"Sec-Fetch-Site": site})
+                self.assertEqual(status, 200)
+
+    def test_extension_report_passes_whatever_fetch_site_says(self) -> None:
+        status, _, _ = self.request(
+            "POST", "/api/browser", {"url": "https://example.com/", "title": "x"},
+            {"Origin": "chrome-extension://abcdef", "Sec-Fetch-Site": "cross-site",
+             "Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+
+    # ---------- summary cost ----------
+
+    def summary_buckets(self, query: str) -> tuple[int, dict]:
+        status, _, data = self.request("GET", "/api/summary?" + query)
+        return status, (json.loads(data) if status == 200 else {})
+
+    def test_wide_ranges_get_a_bounded_timeline(self) -> None:
+        for query in ("period=range&start=2700-01-01&end=5300-01-01", "period=year&bucket_min=1"):
+            with self.subTest(query=query):
+                status, body = self.summary_buckets(query)
+                self.assertEqual(status, 200)
+                self.assertLessEqual(len(body["timeline"]["buckets"]), server._MAX_TIMELINE_BUCKETS + 1)
+
+    def test_ordinary_windows_keep_their_bucket_size(self) -> None:
+        status, body = self.summary_buckets("period=day&anchor=2024-01-01&bucket_min=1")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["timeline"]["bucket_s"], 60.0)
+        self.assertEqual(body["timeline"]["bucket_min_bounds"]["min"], 1)
+        status, body = self.summary_buckets("period=week&anchor=2024-01-01&bucket_min=1")
+        self.assertEqual(body["timeline"]["bucket_s"], 60.0)
+        status, body = self.summary_buckets("period=year&anchor=2024-01-01")
+        self.assertEqual(body["timeline"]["bucket_s"], 86400.0)
+
+    def test_dates_outside_the_calendar_get_a_400(self) -> None:
+        status, _, _ = self.request("GET", "/api/summary?period=range&start=0001-01-01&end=9999-12-31")
+        self.assertEqual(status, 400)
+
+    # ---------- nothing leaves the machine ----------
+
+    def test_dashboard_loads_nothing_from_other_hosts(self) -> None:
+        allowed = ("http://www.w3.org/", "http://${")  # SVG namespace, settings label
+        for name in ("index.html", "app.js", "style.css"):
+            text = (resource_files("omrum.web") / name).read_text(encoding="utf-8")
+            for url in re.findall(r"""https?://[^\s"'`)]*""", text):
+                with self.subTest(name=name, url=url):
+                    self.assertTrue(url.startswith(allowed))
+            # Protocol-relative references would dodge the pattern above.
+            self.assertIsNone(re.search(r"""(?:src|href)=["']//|url\(["']?//""", text))
+
+    def test_csp_allows_no_other_hosts(self) -> None:
+        _, headers, _ = self.request("GET", "/")
+        self.assertNotIn("http", headers["Content-Security-Policy"])
+
     # ---------- stored XSS through label colors ----------
 
     def test_create_rejects_non_hex_color(self) -> None:
